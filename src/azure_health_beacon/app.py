@@ -9,6 +9,7 @@ import threading
 import uuid
 import webbrowser
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import UTC, datetime, timedelta
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from tkinter import (
@@ -29,6 +30,7 @@ from tkinter import (
 
 import pystray
 
+from . import __version__
 from .azure import (
     AzureSubscription,
     delete_isolated_azure_state,
@@ -37,6 +39,7 @@ from .azure import (
     run_provisioning_check,
     validate_subscription_access,
 )
+from .branding import apply_window_branding
 from .config import (
     AppConfig,
     clear_connection_metadata,
@@ -58,8 +61,16 @@ from .model import (
     CheckState,
     aggregate_state,
 )
+from .updater import (
+    ReleaseInfo,
+    download_verified_installer,
+    fetch_latest_release,
+    is_newer_version,
+    launch_installer,
+)
 
 LOGGER = logging.getLogger(__name__)
+UPDATE_CHECK_INTERVAL = timedelta(hours=24)
 
 STATE_LABELS = {
     BeaconState.HEALTHY: "Everything is healthy",
@@ -84,6 +95,7 @@ def _acquire_single_instance() -> object | None:
 class BeaconApp:
     def __init__(self) -> None:
         self.root = Tk()
+        apply_window_branding(self.root)
         self.root.withdraw()
         self.root.title("Azure Health Beacon")
         self.root.protocol("WM_DELETE_WINDOW", self.hide_status)
@@ -111,6 +123,9 @@ class BeaconApp:
         self.previous_stable_state: BeaconState | None = None
         self.status_window: Toplevel | None = None
         self.setup_window: SetupWizard | None = None
+        self.update_settings_window: Toplevel | None = None
+        self.available_update: ReleaseInfo | None = None
+        self.update_in_progress = False
         self.status_body: ttk.Frame | None = None
         self.stop_event = threading.Event()
         self.check_now_event = threading.Event()
@@ -135,6 +150,8 @@ class BeaconApp:
                     self._menu_manage,
                     enabled=lambda _item: self.config.onboarding_completed,
                 ),
+                pystray.MenuItem("Check for updates…", self._menu_check_updates),
+                pystray.MenuItem("Update settings…", self._menu_update_settings),
                 pystray.Menu.SEPARATOR,
                 pystray.MenuItem(
                     "Delete Azure connection…",
@@ -167,6 +184,7 @@ class BeaconApp:
             self.root.after(250, self.show_setup)
         self.root.after(100, self._process_ui_events)
         self.root.after(125, self._animate)
+        self.root.after(3000, self._scheduled_update_check)
         self.root.mainloop()
 
     def _monitor_loop(self) -> None:
@@ -253,6 +271,19 @@ class BeaconApp:
                     self.delete_connection()
                 elif event == "connection_expired":
                     self.expire_connection()
+                elif event == "check_updates":
+                    self.check_for_updates(interactive=True)
+                elif event == "update_settings":
+                    self.show_update_settings()
+                elif event == "update_checked":
+                    release, interactive = payload  # type: ignore[misc]
+                    self._handle_update_checked(release, interactive)
+                elif event == "update_error":
+                    error, interactive = payload  # type: ignore[misc]
+                    self._handle_update_error(str(error), interactive)
+                elif event == "update_downloaded":
+                    installer, automatic = payload  # type: ignore[misc]
+                    self._handle_update_downloaded(installer, automatic)
                 elif event == "exit":
                     self.shutdown()
         except queue.Empty:
@@ -314,6 +345,14 @@ class BeaconApp:
     def _menu_manage(self, _icon: pystray.Icon, _item: pystray.MenuItem) -> None:
         self.ui_events.put(("manage", None))
 
+    def _menu_check_updates(self, _icon: pystray.Icon, _item: pystray.MenuItem) -> None:
+        self.ui_events.put(("check_updates", None))
+
+    def _menu_update_settings(
+        self, _icon: pystray.Icon, _item: pystray.MenuItem
+    ) -> None:
+        self.ui_events.put(("update_settings", None))
+
     def _menu_exit(self, _icon: pystray.Icon, _item: pystray.MenuItem) -> None:
         self.ui_events.put(("exit", None))
 
@@ -328,6 +367,7 @@ class BeaconApp:
             self._refresh_status()
             return
         window = Toplevel(self.root)
+        apply_window_branding(window)
         self.status_window = window
         window.title("Azure Health Beacon")
         window.geometry("560x420")
@@ -348,6 +388,9 @@ class BeaconApp:
         footer.pack(fill=X)
         ttk.Button(footer, text="Manage checks", command=self.show_manager).pack(
             side=LEFT
+        )
+        ttk.Button(footer, text="Updates", command=self.show_update_settings).pack(
+            side=LEFT, padx=(8, 0)
         )
         ttk.Button(footer, text="Check now", command=self.check_now_event.set).pack(
             side=RIGHT
@@ -527,6 +570,204 @@ class BeaconApp:
         self._refresh_status()
         self.check_now_event.set()
 
+    def _scheduled_update_check(self) -> None:
+        if self.stop_event.is_set():
+            return
+        if self.config.update_mode != "manual" and not self.update_in_progress:
+            due = True
+            if self.config.last_update_check_utc:
+                try:
+                    last = datetime.fromisoformat(self.config.last_update_check_utc)
+                    if last.tzinfo is None:
+                        last = last.replace(tzinfo=UTC)
+                    due = (
+                        datetime.now(UTC) - last.astimezone(UTC)
+                        >= UPDATE_CHECK_INTERVAL
+                    )
+                except ValueError:
+                    due = True
+            if due:
+                self.check_for_updates(interactive=False)
+        self.root.after(60 * 60 * 1000, self._scheduled_update_check)
+
+    def check_for_updates(self, *, interactive: bool) -> None:
+        if self.update_in_progress:
+            if interactive:
+                messagebox.showinfo(
+                    "Azure Health Beacon",
+                    "An update check or download is already running.",
+                    parent=self.root,
+                )
+            return
+        self.update_in_progress = True
+
+        def worker() -> None:
+            try:
+                release = fetch_latest_release()
+            except Exception as error:
+                LOGGER.exception("Update check failed")
+                self.ui_events.put(("update_error", (error, interactive)))
+            else:
+                self.ui_events.put(("update_checked", (release, interactive)))
+
+        threading.Thread(target=worker, name="beacon-update-check", daemon=True).start()
+
+    def _handle_update_checked(self, release: ReleaseInfo, interactive: bool) -> None:
+        self.update_in_progress = False
+        self.config.last_update_check_utc = datetime.now(UTC).isoformat()
+        save_config(self.config)
+        if not is_newer_version(release.version):
+            if interactive:
+                messagebox.showinfo(
+                    "Azure Health Beacon",
+                    f"You already have the latest version ({__version__}).",
+                    parent=self.root,
+                )
+            return
+        self.available_update = release
+        self.icon.update_menu()
+        if self.config.update_mode == "automatic" and not interactive:
+            self._download_update(release, automatic=True)
+            return
+        if self.config.update_mode == "notify" and not interactive:
+            self.icon.notify(
+                f"Version {release.version} is ready. Open Update settings to install it.",
+                "Azure Health Beacon — Update available",
+            )
+            return
+        install = messagebox.askyesno(
+            "Azure Health Beacon update",
+            f"Version {release.version} is available.\n\nDownload, verify, and install it now? "
+            "The Beacon will close and restart after installation.",
+            parent=self.root,
+        )
+        if install:
+            self._download_update(release, automatic=False)
+
+    def _handle_update_error(self, error: str, interactive: bool) -> None:
+        self.update_in_progress = False
+        if interactive:
+            messagebox.showerror(
+                "Could not check for updates",
+                f"No update was installed.\n\n{error}",
+                parent=self.root,
+            )
+
+    def _download_update(self, release: ReleaseInfo, *, automatic: bool) -> None:
+        if self.update_in_progress:
+            return
+        self.update_in_progress = True
+        if not automatic:
+            self.icon.notify(
+                "Downloading and verifying the installer.",
+                "Azure Health Beacon — Updating",
+            )
+
+        def worker() -> None:
+            try:
+                installer = download_verified_installer(release)
+            except Exception as error:
+                LOGGER.exception("Update download failed")
+                self.ui_events.put(("update_error", (error, not automatic)))
+            else:
+                self.ui_events.put(("update_downloaded", (installer, automatic)))
+
+        threading.Thread(
+            target=worker, name="beacon-update-download", daemon=True
+        ).start()
+
+    def _handle_update_downloaded(self, installer: Path, automatic: bool) -> None:
+        try:
+            launch_installer(installer, automatic=automatic)
+        except OSError as error:
+            self._handle_update_error(str(error), not automatic)
+            return
+        self.shutdown()
+
+    def show_update_settings(self) -> None:
+        if self.update_settings_window and self.update_settings_window.winfo_exists():
+            self.update_settings_window.deiconify()
+            self.update_settings_window.lift()
+            self.update_settings_window.focus_force()
+            return
+        window = Toplevel(self.root)
+        apply_window_branding(window)
+        self.update_settings_window = window
+        window.title("Azure Health Beacon updates")
+        window.geometry("570x390")
+        window.resizable(False, False)
+        window.protocol("WM_DELETE_WINDOW", window.destroy)
+        body = ttk.Frame(window, padding=24)
+        body.pack(fill=BOTH, expand=True)
+        ttk.Label(
+            body,
+            text=f"Updates — current version {__version__}",
+            font=("Segoe UI", 15, "bold"),
+        ).pack(anchor="w")
+        ttk.Label(
+            body,
+            text="Automatic updating is off unless you explicitly select it here.",
+            wraplength=510,
+        ).pack(anchor="w", pady=(6, 16))
+        selected = StringVar(value=self.config.update_mode)
+        choices = (
+            (
+                "manual",
+                "Manual only (default)",
+                "The Beacon makes no background update requests. Use Check now when you choose.",
+            ),
+            (
+                "notify",
+                "Notify me",
+                "Check GitHub once per day and tell me when an update is available.",
+            ),
+            (
+                "automatic",
+                "Install automatically",
+                "Check once per day, verify the SHA-256 checksum, install silently, and restart the Beacon.",
+            ),
+        )
+        for value, title, description in choices:
+            ttk.Radiobutton(body, text=title, variable=selected, value=value).pack(
+                anchor="w", pady=(4, 0)
+            )
+            ttk.Label(body, text=description, wraplength=480).pack(
+                anchor="w", padx=(24, 0)
+            )
+
+        buttons = ttk.Frame(body)
+        buttons.pack(fill=X, side="bottom", pady=(18, 0))
+
+        def save() -> None:
+            choice = selected.get()
+            if choice == "automatic" and self.config.update_mode != "automatic":
+                confirmed = messagebox.askyesno(
+                    "Enable automatic installation?",
+                    "The Beacon will be allowed to download verified installers from this project's GitHub "
+                    "releases, install them silently for your Windows account, close, and restart itself.\n\n"
+                    "Enable this opt-in setting?",
+                    parent=window,
+                )
+                if not confirmed:
+                    return
+            self.config.update_mode = choice
+            save_config(self.config)
+            window.destroy()
+            if choice != "manual":
+                self.config.last_update_check_utc = ""
+                save_config(self.config)
+                self.check_for_updates(interactive=False)
+
+        ttk.Button(
+            buttons,
+            text="Check now",
+            command=lambda: self.check_for_updates(interactive=True),
+        ).pack(side=LEFT)
+        ttk.Button(buttons, text="Save", command=save).pack(side=RIGHT)
+        ttk.Button(buttons, text="Cancel", command=window.destroy).pack(
+            side=RIGHT, padx=(0, 8)
+        )
+
     def shutdown(self) -> None:
         self.stop_event.set()
         self.check_now_event.set()
@@ -540,6 +781,7 @@ class SetupWizard:
     def __init__(self, app: BeaconApp) -> None:
         self.app = app
         self.window = Toplevel(app.root)
+        apply_window_branding(self.window)
         self.window.title("Set up Azure Health Beacon")
         self.window.geometry("620x470")
         self.window.minsize(560, 420)
@@ -731,6 +973,7 @@ class CheckManager:
     def __init__(self, app: BeaconApp) -> None:
         self.app = app
         self.window = Toplevel(app.root)
+        apply_window_branding(self.window)
         self.window.title("Manage Azure checks")
         self.window.geometry("760x470")
         self.window.minsize(680, 420)

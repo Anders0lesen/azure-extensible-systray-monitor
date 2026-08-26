@@ -14,7 +14,7 @@ from urllib.parse import unquote, urlparse
 from .model import CheckDefinition
 
 APP_NAME = "AzureHealthBeacon"
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 RULE_PACK_FORMAT = "azure-health-beacon-rule-pack"
 RULE_PACK_SCHEMA_VERSION = 1
 MAX_RULE_PACK_BYTES = 1_000_000
@@ -45,6 +45,8 @@ class AppConfig:
     interval_minutes: int = 5
     timeout_seconds: int = 30
     retry_count: int = 2
+    update_mode: str = "manual"
+    last_update_check_utc: str = ""
     checks: list[CheckDefinition] = field(default_factory=list)
 
 
@@ -128,19 +130,22 @@ def load_config(path: Path | None = None) -> AppConfig:
     raw = json.loads(target.read_text(encoding="utf-8"))
     _reject_sensitive_keys(raw)
     loaded_schema = int(raw.get("schema_version", 0))
-    if loaded_schema not in (1, SCHEMA_VERSION):
+    if loaded_schema not in (1, 2, SCHEMA_VERSION):
         raise ValueError(
             f"Unsupported configuration schema: {raw.get('schema_version')}"
         )
     interval = int(raw.get("interval_minutes", 5))
     timeout = int(raw.get("timeout_seconds", 30))
     retries = int(raw.get("retry_count", 2))
+    update_mode = str(raw.get("update_mode", "manual")).strip()
     if not 1 <= interval <= 1440:
         raise ValueError("interval_minutes must be between 1 and 1440")
     if not 5 <= timeout <= 300:
         raise ValueError("timeout_seconds must be between 5 and 300")
     if not 0 <= retries <= 5:
         raise ValueError("retry_count must be between 0 and 5")
+    if update_mode not in {"manual", "notify", "automatic"}:
+        raise ValueError("update_mode must be manual, notify, or automatic")
     checks = [_definition_from_dict(item) for item in raw.get("checks", [])]
     return AppConfig(
         schema_version=SCHEMA_VERSION,
@@ -157,6 +162,8 @@ def load_config(path: Path | None = None) -> AppConfig:
         interval_minutes=interval,
         timeout_seconds=timeout,
         retry_count=retries,
+        update_mode=update_mode,
+        last_update_check_utc=str(raw.get("last_update_check_utc", "")).strip(),
         checks=checks,
     )
 
@@ -175,6 +182,8 @@ def save_config(config: AppConfig, path: Path | None = None) -> Path:
         "interval_minutes": config.interval_minutes,
         "timeout_seconds": config.timeout_seconds,
         "retry_count": config.retry_count,
+        "update_mode": config.update_mode,
+        "last_update_check_utc": config.last_update_check_utc,
         "checks": [asdict(check) for check in config.checks],
     }
     _reject_sensitive_keys(payload)

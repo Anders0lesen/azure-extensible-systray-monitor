@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import io
 import json
 import subprocess
 import tempfile
@@ -33,6 +35,11 @@ from azure_health_beacon.model import (
     CheckResult,
     CheckState,
     aggregate_state,
+)
+from azure_health_beacon.updater import (
+    download_verified_installer,
+    is_newer_version,
+    parse_release_payload,
 )
 
 RESOURCE_ID = (
@@ -116,8 +123,9 @@ class ConfigurationTests(unittest.TestCase):
                 encoding="utf-8",
             )
             loaded = load_config(path)
-            self.assertEqual(loaded.schema_version, 2)
+            self.assertEqual(loaded.schema_version, 3)
             self.assertFalse(loaded.onboarding_completed)
+            self.assertEqual(loaded.update_mode, "manual")
 
     def test_connection_hard_expires_at_fourteen_days(self) -> None:
         started = datetime(2026, 8, 1, tzinfo=UTC)
@@ -271,6 +279,108 @@ class AzureAuthenticationTests(unittest.TestCase):
         arguments = run_az.call_args.args[0]
         self.assertEqual(arguments[:2], ["group", "list"])
         self.assertIn(subscription.id, arguments)
+
+
+class FakeResponse(io.BytesIO):
+    def __init__(self, data: bytes, url: str) -> None:
+        super().__init__(data)
+        self.headers: dict[str, str] = {"Content-Length": str(len(data))}
+        self.url = url
+
+    def geturl(self) -> str:
+        return self.url
+
+    def __enter__(self) -> FakeResponse:
+        return self
+
+    def __exit__(self, *_args: object) -> None:
+        self.close()
+
+
+class UpdateTests(unittest.TestCase):
+    def release_payload(self) -> dict[str, object]:
+        tag = "v0.3.0"
+        installer = f"AzureHealthBeacon-Setup-{tag}.exe"
+        base = (
+            "https://github.com/Anders0lesen/azure-extensible-systray-monitor/"
+            f"releases/download/{tag}"
+        )
+        return {
+            "draft": False,
+            "prerelease": False,
+            "tag_name": tag,
+            "name": "Azure Health Beacon 0.3.0",
+            "body": "Updater release",
+            "html_url": (
+                "https://github.com/Anders0lesen/azure-extensible-systray-monitor/"
+                f"releases/tag/{tag}"
+            ),
+            "assets": [
+                {
+                    "name": installer,
+                    "browser_download_url": f"{base}/{installer}",
+                    "digest": (
+                        "sha256:" + hashlib.sha256(b"test installer bytes").hexdigest()
+                    ),
+                },
+                {
+                    "name": f"{installer}.sha256",
+                    "browser_download_url": f"{base}/{installer}.sha256",
+                },
+            ],
+        }
+
+    def test_semantic_version_comparison(self) -> None:
+        self.assertTrue(is_newer_version("0.3.0", "0.2.0"))
+        self.assertFalse(is_newer_version("0.2.0", "0.2.0"))
+        self.assertFalse(is_newer_version("0.1.9", "0.2.0"))
+
+    def test_release_parser_pins_repo_and_exact_asset_names(self) -> None:
+        release = parse_release_payload(self.release_payload())
+        self.assertEqual(release.version, "0.3.0")
+        payload = self.release_payload()
+        assets = payload["assets"]
+        assert isinstance(assets, list)
+        assert isinstance(assets[0], dict)
+        assets[0]["browser_download_url"] = (
+            "https://github.com/attacker/repo/releases/download/v0.3.0/"
+            "AzureHealthBeacon-Setup-v0.3.0.exe"
+        )
+        with self.assertRaisesRegex(ValueError, "unexpected update download URL"):
+            parse_release_payload(payload)
+
+    @patch("azure_health_beacon.updater._request")
+    def test_installer_download_requires_matching_sha256(self, request) -> None:
+        payload = b"test installer bytes"
+        digest = hashlib.sha256(payload).hexdigest()
+        release = parse_release_payload(self.release_payload())
+        request.side_effect = [
+            FakeResponse(
+                f"{digest} *{release.installer_name}\n".encode("ascii"),
+                release.checksum_url,
+            ),
+            FakeResponse(payload, release.installer_url),
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            installer = download_verified_installer(release, Path(directory))
+            self.assertEqual(installer.read_bytes(), payload)
+
+    @patch("azure_health_beacon.updater._request")
+    def test_installer_download_rejects_checksum_mismatch(self, request) -> None:
+        release = parse_release_payload(self.release_payload())
+        request.side_effect = [
+            FakeResponse(
+                f"{release.installer_digest} *{release.installer_name}\n".encode(
+                    "ascii"
+                ),
+                release.checksum_url,
+            ),
+            FakeResponse(b"not the approved installer", release.installer_url),
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaisesRegex(ValueError, "failed SHA-256 verification"):
+                download_verified_installer(release, Path(directory))
+            self.assertEqual(list(Path(directory).iterdir()), [])
 
 
 if __name__ == "__main__":
