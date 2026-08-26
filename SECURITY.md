@@ -21,6 +21,8 @@ Use GitHub private vulnerability reporting/security advisories. If unavailable, 
 - Never run `az account set` or alter the user's global Azure CLI context.
 - Never read, clear, log out, or delete `%USERPROFILE%\.azure`.
 - Never make the 14-day authorization lease configurable.
+- Never enable background update checks or automatic installation by default.
+- Never accept update metadata or binaries from a repository, host, tag, or asset name outside the pinned release format.
 - Never publish real configuration, logs, rule packs, or build artifacts without inspection.
 
 ## Authentication boundary
@@ -57,6 +59,16 @@ Logs rotate and do not contain successful Azure response bodies. Azure CLI error
 - Provisioning checks request only `properties.provisioningState` as text.
 - Every lookup includes its subscription ID.
 - Optional tenant pins are verified before lookup.
+
+## Update boundary
+
+Update mode defaults to `manual`. Manual mode performs no background update requests. `notify` and `automatic` modes are persisted only after the user selects them; entering automatic mode requires an additional confirmation.
+
+The updater reads only the stable `latest` release from `Anders0lesen/azure-extensible-systray-monitor`. It rejects drafts, prereleases, non-semantic tags, unexpected release URLs, missing assets, redirects outside GitHub's release-asset hosts, oversized responses, and unexpected filenames.
+
+Before execution, the downloaded installer must match both GitHub's API-provided SHA-256 asset digest and the release's checksum file. Release builds also receive a GitHub artifact-provenance attestation. These controls do not replace Authenticode publisher signing; the current public preview remains unsigned and should not be enterprise-deployed until signing is added.
+
+No Azure credential, rule, tenant ID, subscription ID, or isolated Azure CLI data is included in update requests.
 
 ## Rule-pack boundary
 

@@ -11,6 +11,21 @@
 | Connection expired | Sign in again, manage retained rules after validation, exit | New validation succeeds |
 | Unconnectable | Retry, renew connection, inspect error | A read succeeds or connection is deleted |
 
+## Update lifecycle
+
+```text
+manual by default
+  -> user may opt into notify-only or automatic installation
+      -> read stable release metadata from the pinned GitHub repository
+          -> require exact installer/checksum assets
+              -> download to app-owned local update storage
+                  -> verify GitHub digest and release checksum
+                      -> launch per-user installer
+                          -> close and restart Beacon
+```
+
+Automatic mode is never inferred from a previous install or Azure setup choice. Existing configurations migrate to manual mode. Failed metadata, download, redirect, size, or checksum validation leaves the current version running.
+
 ## Rule lifecycle
 
 ```text
@@ -38,10 +53,11 @@ The connection is blocked before deletion begins. If a file lock prevents immedi
 
 ### Remove application
 
-The prototype does not install services, drivers, scheduled tasks, or startup entries. To remove it:
+The installer does not add services, drivers, scheduled tasks, or startup entries. To remove it:
 
 1. Exit from the tray menu.
-2. Delete `AzureHealthBeacon.exe`.
-3. Delete `%LOCALAPPDATA%\AzureHealthBeacon` if rules, logs, configuration, and the isolated Azure CLI profile should also be removed.
+2. Open **Settings → Apps → Installed apps**.
+3. Uninstall **Azure Health Beacon**.
+4. Delete `%LOCALAPPDATA%\AzureHealthBeacon` only if rules, logs, configuration, downloaded updates, and the isolated Azure CLI profile should also be removed.
 
-Deleting the executable alone leaves local data behind by design, allowing a later reinstall to retain rules. A future signed installer should offer explicit **keep data** and **remove all local data** choices.
+Uninstall leaves local data behind by design, allowing a later reinstall to retain rules. Use **Delete Azure connection** before uninstall when the app-owned Azure CLI profile must be purged without removing retained rules.
