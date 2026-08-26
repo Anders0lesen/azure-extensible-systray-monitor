@@ -1,0 +1,32 @@
+__pycache__/
+*.py[cod]
+.venv/
+build/
+dist/
+*.spec
+
+# Local app state and logs
+checks.json
+checks.json.bak
+azure-cli/
+*.log
+smoke-data/
+icon-preview.png
+
+# Rule packs may expose internal Azure metadata
+*.ahbrules.json
+!examples/*.ahbrules.json
+
+# Common secret-bearing files
+.env
+.env.*
+*.pem
+*.pfx
+*.p12
+*.key
+*.cer
+
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
