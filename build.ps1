@@ -1,3 +1,7 @@
+param(
+    [switch]$Installer
+)
+
 $ErrorActionPreference = 'Stop'
 
 $ProjectRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -22,6 +26,27 @@ if (-not (Test-Path -LiteralPath $VenvPython)) {
 $env:PYTHONPATH = Join-Path $ProjectRoot 'src'
 & $VenvPython -m ruff check $ProjectRoot
 & $VenvPython -m unittest discover -s (Join-Path $ProjectRoot 'tests') -v
-& $VenvPython -m PyInstaller --noconfirm --clean --onefile --windowed --name AzureHealthBeacon --paths (Join-Path $ProjectRoot 'src') (Join-Path $ProjectRoot 'launcher.py')
+$VersionInfo = Join-Path $ProjectRoot 'build\version_info.txt'
+$Version = & $VenvPython (Join-Path $ProjectRoot 'scripts\write_version_info.py') $VersionInfo
+$BrandIcon = Join-Path $ProjectRoot 'assets\AzureHealthBeacon.ico'
+& $VenvPython -m PyInstaller --noconfirm --clean --onefile --windowed --name AzureHealthBeacon --icon $BrandIcon --add-data "$BrandIcon;assets" --version-file $VersionInfo --paths (Join-Path $ProjectRoot 'src') (Join-Path $ProjectRoot 'launcher.py')
+
+if ($Installer) {
+    $Compiler = Get-Command ISCC.exe -ErrorAction SilentlyContinue
+    if (-not $Compiler) {
+        $Candidates = @(
+            (Join-Path $env:ProgramFiles 'Inno Setup 7\ISCC.exe'),
+            (Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6\ISCC.exe')
+        )
+        $CompilerPath = $Candidates | Where-Object { $_ -and (Test-Path -LiteralPath $_) } | Select-Object -First 1
+    }
+    else {
+        $CompilerPath = $Compiler.Source
+    }
+    if (-not $CompilerPath) {
+        throw 'Inno Setup was not found. Install Inno Setup 7 or run the GitHub release workflow.'
+    }
+    & $CompilerPath "/DAppVersion=$Version" (Join-Path $ProjectRoot 'installer\AzureHealthBeacon.iss')
+}
 
 Write-Host "Built: $(Join-Path $ProjectRoot 'dist\AzureHealthBeacon.exe')"

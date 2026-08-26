@@ -1,6 +1,8 @@
 __pycache__/
 *.py[cod]
 .venv/
+.smoke-profile/
+.tools/
 build/
 dist/
 *.spec
