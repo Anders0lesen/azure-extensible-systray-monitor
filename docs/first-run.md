@@ -26,9 +26,11 @@ az group list --subscription <subscription-id> --query length(@) --output tsv
 
 If the identity has narrower resource-level access but cannot list resource groups, setup currently fails. This is a known prototype limitation.
 
-## 5. Add, test, and apply the first rule
+## 5. Discover, test, and apply the first rule
 
-Paste an Azure Portal resource URL, choose **Test without saving**, inspect the actual provisioning state, and then select **Apply tested rule**. Editing any field invalidates the test and requires another test before applying.
+Open **Discover Azure signals** from Rule Studio. Browse the Log Analytics workspaces/tables or ARM resources/metric definitions the identity can read, or start with a Resource Graph template. Define what should return a finding, choose **Test without saving**, inspect the live result, and then select **Save tested rule**. Editing or renaming any field invalidates the test and requires another test before saving.
+
+Discovery reads metadata only and does not save it. KQL result rows remain in memory for the current evaluation and never enter the configuration or a rule-pack export.
 
 ## Renewal
 

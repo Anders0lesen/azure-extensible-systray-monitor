@@ -2,6 +2,23 @@
 
 This project uses [Semantic Versioning](https://semver.org/). Changes are grouped by release so each GitHub tag has a short, human-readable scope.
 
+## [0.5.0] - 2026-08-27
+
+### Added
+
+- Full Azure Monitor Logs and workspace-based Application Insights KQL rules.
+- Azure Monitor metric rules with live metric-definition discovery, aggregation, reducer, dimension filter, comparison, threshold, and lookback controls.
+- Signal Explorer for permission-scoped workspace/table and resource/metric discovery.
+- Transparent starter queries for Application Insights session errors, failed requests, AVD connection failures, Function failures, and container restarts.
+- Dark-first Rule Studio, Windows dark title bars, persistent light-mode toggle, and GitHub-linked About window.
+
+### Changed
+
+- Rule names and every condition are explicitly editable and require a fresh live test before saving.
+- Rule-pack schema 3 carries credential-free log and metric rules; schemas 1 and 2 remain importable.
+- Log result collection is server-capped and never persisted or exported.
+- Missing access, query errors, and absent metric samples remain grey; only confirmed findings are red.
+
 ## [0.4.0] - 2026-08-27
 
 ### Added
@@ -51,3 +68,4 @@ First public preview.
 [0.2.0]: https://github.com/Anders0lesen/azure-extensible-systray-monitor/releases/tag/v0.2.0
 [0.3.0]: https://github.com/Anders0lesen/azure-extensible-systray-monitor/releases/tag/v0.3.0
 [0.4.0]: https://github.com/Anders0lesen/azure-extensible-systray-monitor/releases/tag/v0.4.0
+[0.5.0]: https://github.com/Anders0lesen/azure-extensible-systray-monitor/releases/tag/v0.5.0

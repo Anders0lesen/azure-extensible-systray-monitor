@@ -17,7 +17,7 @@ Use GitHub private vulnerability reporting/security advisories. If unavailable, 
 - Never add a username/password form to the Beacon.
 - Never request, print, persist, export, or log access or refresh tokens.
 - Never support client secrets, storage keys, SAS tokens, PATs, connection strings, or private keys in rules.
-- Never run imported commands, scripts, or arbitrary URLs. Imported KQL may be sent only to Azure's read-only Resource Graph endpoint after review and a live test.
+- Never run imported commands, scripts, or arbitrary URLs. Imported KQL may be sent only to Azure Resource Graph or the selected Azure Monitor Logs workspace after review and a live test. Metric rules may query only the configured ARM resource and metric definition.
 - Never run `az account set` or alter the user's global Azure CLI context.
 - Never read, clear, log out, or delete `%USERPROFILE%\.azure`.
 - Never make the 14-day authorization lease configurable.
@@ -60,6 +60,9 @@ Logs rotate and do not contain successful Azure response bodies. Azure CLI error
 - Every lookup includes its subscription ID.
 - Optional tenant pins are verified before lookup.
 - Resource Graph calls explicitly enumerate enabled subscriptions, are split by tenant, and retain only compact finding previews in memory; response bodies are never logged.
+- Log Analytics rules are sent directly to Azure Monitor through the trusted Azure CLI module. The app appends a 26-row server-side cap, retains at most 25 compact previews in memory, and never writes result rows to configuration, exports, or logs.
+- Signal discovery retains only workspace/table/resource/metric metadata in memory for the open window. Resource listing is capped at 1,000 items per refresh. Discovery results are not persisted.
+- Metric checks retain only the numeric samples required to evaluate the configured reducer and threshold. No-data responses are grey rather than assumed healthy.
 
 ## Update boundary
 
@@ -73,6 +76,6 @@ No Azure credential, rule, tenant ID, subscription ID, or isolated Azure CLI dat
 
 ## Rule-pack boundary
 
-Rule packs are strict data-only JSON. They may contain Resource Graph KQL but never local executable code. Imports reject unknown fields, arbitrary commands, scripts, non-Azure links, credential-like keys, common secret formats, oversized files, excessive rule counts, and duplicate IDs. Imported rules are disabled until reviewed, tested, and explicitly applied.
+Rule packs are strict data-only JSON. They may contain Resource Graph or Azure Monitor KQL and metric conditions but never local executable code or query results. Imports reject unknown fields, arbitrary commands, scripts, non-Azure links, credential-like keys, common secret formats, oversized files, excessive rule counts, and duplicate IDs. Imported rules are disabled until reviewed, tested, and explicitly applied.
 
 For details, see [Credential security](docs/credential-security.md).

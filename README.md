@@ -2,9 +2,9 @@
 
 <img src="assets/AzureHealthBeacon-Brand.png" alt="Azure Health Beacon" width="640">
 
-Current version: **0.4.0 public preview** — see the [changelog](CHANGELOG.md).
+Current version: **0.5.0 public preview** — see the [changelog](CHANGELOG.md).
 
-> **Prototype:** Windows 11 only. **Azure Health Beacon** monitors resource provisioning states and multi-subscription Azure Resource Graph findings.
+> **Prototype:** Windows 11 only. **Azure Health Beacon** lets you discover Azure signal surfaces and turn the properties, Resource Graph records, logs, Application Insights telemetry, and metrics you care about into tray warnings.
 
 Azure Health Beacon is a small system-tray monitor that answers one question at a glance: **is anything in Azure broken that I need to care about right now?**
 
@@ -19,7 +19,7 @@ The application is designed around the complete operating lifecycle, not only th
 | First-ever use | Start grey, open setup automatically, and block monitoring |
 | Add Azure connection | Open Microsoft's interactive login in an app-isolated Azure CLI profile |
 | Test connection | Select a subscription and complete a live, read-only Azure request |
-| Add rule | Choose a provisioning-state rule or a Resource Graph/KQL findings rule |
+| Add rule | Choose a resource property, Resource Graph, Logs/Application Insights, or metric source |
 | Test rule | Run the exact unsaved rule live and show its result without saving |
 | Apply rule | Enabled only after the current rule contents have produced a reachable result |
 | Rules exist | Check every five minutes; aggregate results into one tray state |
@@ -45,7 +45,7 @@ Read [Credential security](docs/credential-security.md) and [Security policy](SE
 
 ## Install
 
-Download the installer from the [latest GitHub release](https://github.com/Anders0lesen/azure-extensible-systray-monitor/releases/latest) and run `AzureHealthBeacon-Setup-v0.4.0.exe`. It installs for the current Windows user, adds a Start Menu entry, and does not request administrator access.
+Download the installer from the [latest GitHub release](https://github.com/Anders0lesen/azure-extensible-systray-monitor/releases/latest) and run `AzureHealthBeacon-Setup-v0.5.0.exe`. It installs for the current Windows user, adds a Start Menu entry, and does not request administrator access.
 
 The public-preview installer is not Authenticode code-signed yet, so Windows may show **Unknown publisher**. The release includes a SHA-256 checksum and GitHub build-provenance attestation. Do not install a copy obtained from anywhere except this repository.
 
@@ -57,7 +57,8 @@ The public-preview installer is not Authenticode code-signed yet, so Windows may
 4. Select the intended subscription.
 5. Select **Verify Azure access**.
 6. Continue to checks only after validation succeeds.
-7. Paste a Portal resource URL, select **Test without saving**, then **Apply tested rule**.
+7. Open **Discover Azure signals** to browse workspaces/tables or resources/metrics, or choose a source directly.
+8. Define what should count as a finding, select **Test without saving**, then **Save tested rule**.
 
 Until setup succeeds, the tray remains grey and monitoring/check-management commands are disabled.
 
@@ -75,14 +76,18 @@ Red is reserved for a confirmed Azure problem. Authentication and network failur
 
 The application artwork is used for Windows branding only. The tray deliberately continues to use the five operational state icons above; it is a monitoring surface, not a branding surface.
 
-## Current rule types
+## Signal sources and rules
 
-Version `0.4.0` supports two strict, data-only rule types:
+Version `0.5.0` supports four strict, data-only signal sources:
 
-- **Provisioning state:** fetch one resource's `properties.provisioningState`; `Succeeded` is healthy by default.
+- **Resource property:** fetch one resource's `properties.provisioningState`; `Succeeded` is healthy by default.
 - **Resource Graph/KQL findings:** run one read-only query across every enabled subscription the login can access. Zero rows is healthy; one or more rows is a confirmed red finding.
+- **Logs/Application Insights KQL:** select a discoverable Log Analytics workspace, browse its tables, and run full Azure Monitor KQL. Zero rows is healthy; returned rows are findings.
+- **Azure Monitor metric:** select any readable resource and one of its live metric definitions, then configure aggregation, lookback, reducer, optional dimension filter, comparison, and threshold.
 
-The built-in Graph templates cover fired Azure Monitor alerts, Resource Health problems, active Azure Service Health incidents, and Azure Policy non-compliance. You can edit or write your own [Azure Resource Graph query](https://learn.microsoft.com/azure/governance/resource-graph/concepts/query-language), then test the exact text before Apply is enabled. Resource Graph uses a KQL subset and is eventually consistent; it is not a live network-connectivity test.
+**Rule Studio** is dark by default and has a light-mode toggle in the top right. Rule names, sources, queries, thresholds, and enabled state are editable. **Discover Azure signals** reads the workspaces, table schemas, resources, metric names, units, aggregations, and dimensions available to the signed-in identity. Templates for Application Insights, AVD, Functions, containers, alerts, Resource Health, Service Health, and Policy are transparent starting points—not a limit on what can be monitored.
+
+You can edit or write your own [Resource Graph query](https://learn.microsoft.com/azure/governance/resource-graph/concepts/query-language) or [Azure Monitor log query](https://learn.microsoft.com/azure/azure-monitor/logs/queries), then test the exact unsaved text. Azure Monitor Logs requires query/read permission on the selected workspace. Metric availability depends on the selected resource's definitions.
 
 Authentication, authorization, connectivity, timeout, invalid-query, and incomplete-scope errors are grey. If one tenant produces a confirmed finding while another tenant cannot be checked, red wins and the result says the scope was partial.
 
@@ -90,7 +95,7 @@ The Azure CLI query returns only provisioning-state text, not the complete resou
 
 ## Rule packs
 
-Exports contain resource metadata, expected states, and KQL query text but no authentication material. Imports reject unknown fields, scripts, commands, non-Azure links, excessive size/count, duplicate IDs, credential-like fields, and common secret formats. Imported rules are disabled until reviewed, tested, and applied.
+Exports contain source metadata, thresholds, resource/workspace identifiers, and KQL text but no authentication material or query results. Imports reject unknown fields, scripts, commands, non-Azure links, excessive size/count, duplicate IDs, credential-like fields, and common secret formats. Imported rules are disabled until reviewed, tested, and applied.
 
 Resource names, subscription IDs, and tenant IDs can still be sensitive internal metadata. Use an approved team channel.
 
@@ -136,7 +141,9 @@ Both **Start Azure Health Beacon when I sign in to Windows** and **Start minimiz
 
 - The executable and installer are not Authenticode code-signed yet; GitHub provenance and checksums are provided, but Windows publisher verification requires a future signing certificate.
 - First-use validation lists only the number of resource groups and therefore requires that Azure permission.
-- Resource Graph is eventually consistent and cannot prove live packet flow or replace Azure Monitor metrics/Log Analytics checks.
+- Resource Graph is eventually consistent and cannot prove live packet flow.
+- Generic log rules cannot infer whether silence means healthy or missing telemetry. Query/table/access failures are grey; where silence itself matters, write an explicit heartbeat or freshness rule.
+- The discovery catalogue is permission-scoped and capped at 1,000 ARM resources per refresh; it does not claim to enumerate data the signed-in identity cannot read.
 - The application can delete everything it owns, but it cannot securely erase an account retained by Windows WAM without modifying system-wide account state.
 - A compromised Windows user session can act with that user's permissions; no desktop app can make that scenario impossible.
 
