@@ -67,6 +67,43 @@ jobs:
           $Asset = "dist\AzureHealthBeacon-Setup-$env:GITHUB_REF_NAME.exe"
           $Hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $Asset).Hash.ToLowerInvariant()
           "$Hash *$([IO.Path]::GetFileName($Asset))" | Set-Content -Encoding ascii "$Asset.sha256"
+      - name: Verify restart from an inherited PyInstaller runtime
+        shell: pwsh
+        run: |
+          $Version = $env:GITHUB_REF_NAME.TrimStart('v')
+          $Asset = Join-Path $env:GITHUB_WORKSPACE "dist\AzureHealthBeacon-Setup-$env:GITHUB_REF_NAME.exe"
+          $InstallDir = Join-Path $env:RUNNER_TEMP 'beacon-restart-test'
+          $InstallExe = Join-Path $InstallDir 'AzureHealthBeacon.exe'
+          $StaleRuntime = Join-Path $env:RUNNER_TEMP '_MEI-stale-runtime'
+          New-Item -ItemType Directory -Path $StaleRuntime -Force | Out-Null
+
+          # Reproduce the environment inherited when an older onefile build
+          # starts Setup, exits, and deletes its temporary Python runtime.
+          $env:_PYI_ARCHIVE_FILE = $InstallExe
+          $env:_PYI_APPLICATION_HOME_DIR = $StaleRuntime
+          $env:_PYI_PARENT_PROCESS_LEVEL = '2'
+          Remove-Item Env:PYINSTALLER_RESET_ENVIRONMENT -ErrorAction SilentlyContinue
+
+          $Setup = Start-Process -FilePath $Asset -ArgumentList @(
+            '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/CLOSEAPPLICATIONS',
+            '/RESTARTAPPLICATIONS', "/DIR=$InstallDir"
+          ) -Wait -PassThru -WindowStyle Hidden
+          if ($Setup.ExitCode -ne 0) {
+            throw "Restart-test installer failed with exit code $($Setup.ExitCode)."
+          }
+
+          Start-Sleep -Seconds 8
+          $Running = Get-CimInstance Win32_Process | Where-Object {
+            $_.Name -eq 'AzureHealthBeacon.exe' -and $_.ExecutablePath -eq $InstallExe
+          }
+          if (-not $Running) {
+            throw 'The installed Beacon did not survive the contaminated _MEI restart.'
+          }
+          $InstalledVersion = (Get-Item -LiteralPath $InstallExe).VersionInfo.ProductVersion.Trim()
+          if ($InstalledVersion -ne $Version) {
+            throw "Restarted version $InstalledVersion did not match $Version."
+          }
+          $Running | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
       - name: Attest installer provenance
         uses: actions/attest@v4
         with:
