@@ -28,4 +28,3 @@ CUSTOM_TEMPLATE = """Resources
 | where type =~ 'microsoft.example/resourceType'
 | where tostring(properties.someState) !~ 'Healthy'
 | project subscriptionId, name, resourceGroup, type, id"""
-

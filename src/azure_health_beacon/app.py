@@ -23,7 +23,6 @@ from tkinter import (
     Tk,
     Toplevel,
     X,
-    Y,
     filedialog,
     messagebox,
     ttk,
@@ -33,8 +32,15 @@ import pystray
 
 from . import __version__
 from .azure import (
+    AzureMetricDefinition,
+    AzureResource,
     AzureSubscription,
+    AzureWorkspace,
     delete_isolated_azure_state,
+    discover_metric_definitions,
+    discover_resources,
+    discover_workspace_tables,
+    discover_workspaces,
     interactive_login,
     list_subscriptions,
     run_check,
@@ -64,6 +70,18 @@ from .model import (
     CheckState,
     aggregate_state,
 )
+from .signal_sources import (
+    CUSTOM_LOG_TEMPLATE,
+    LOG_TEMPLATES,
+    METRIC_OPERATOR_BY_LABEL,
+    METRIC_OPERATORS,
+    METRIC_REDUCER_BY_LABEL,
+    METRIC_REDUCERS,
+    SIGNAL_SOURCES,
+    SOURCE_BY_KEY,
+    SOURCE_KEY_BY_LABEL,
+)
+from .ui_theme import apply_theme
 from .updater import (
     ReleaseInfo,
     download_verified_installer,
@@ -75,6 +93,7 @@ from .windows_startup import set_startup_enabled
 
 LOGGER = logging.getLogger(__name__)
 UPDATE_CHECK_INTERVAL = timedelta(hours=24)
+PROJECT_URL = "https://github.com/Anders0lesen/azure-extensible-systray-monitor"
 
 STATE_LABELS = {
     BeaconState.HEALTHY: "Everything is healthy",
@@ -105,6 +124,8 @@ class BeaconApp:
         self.root.title("Azure Health Beacon")
         self.root.protocol("WM_DELETE_WINDOW", self.hide_status)
         self.config = self._load_config_safely()
+        self.theme_buttons: list[ttk.Button] = []
+        apply_theme(self.root, self.config.theme_mode)
         self.connection_expired_on_start = False
         self.connection_purge_error = ""
         if self.config.connection_purge_pending or connection_is_expired(self.config):
@@ -158,6 +179,7 @@ class BeaconApp:
                 ),
                 pystray.MenuItem("Check for updates…", self._menu_check_updates),
                 pystray.MenuItem("Settings…", self._menu_update_settings),
+                pystray.MenuItem("About…", self._menu_about),
                 pystray.Menu.SEPARATOR,
                 pystray.MenuItem(
                     "Delete Azure connection…",
@@ -284,6 +306,8 @@ class BeaconApp:
                     self.check_for_updates(interactive=True)
                 elif event == "update_settings":
                     self.show_settings()
+                elif event == "about":
+                    self.show_about()
                 elif event == "update_checked":
                     release, interactive = payload  # type: ignore[misc]
                     self._handle_update_checked(release, interactive)
@@ -362,8 +386,37 @@ class BeaconApp:
     ) -> None:
         self.ui_events.put(("update_settings", None))
 
+    def _menu_about(self, _icon: pystray.Icon, _item: pystray.MenuItem) -> None:
+        self.ui_events.put(("about", None))
+
     def _menu_exit(self, _icon: pystray.Icon, _item: pystray.MenuItem) -> None:
         self.ui_events.put(("exit", None))
+
+    def theme_button(self, parent: ttk.Frame) -> ttk.Button:
+        label = "☀  Light" if self.config.theme_mode == "dark" else "🌙  Dark"
+        button = ttk.Button(
+            parent,
+            text=label,
+            style="Theme.TButton",
+            command=self.toggle_theme,
+        )
+        self.theme_buttons.append(button)
+        return button
+
+    def toggle_theme(self) -> None:
+        self.config.theme_mode = "light" if self.config.theme_mode == "dark" else "dark"
+        save_config(self.config)
+        apply_theme(self.root, self.config.theme_mode)
+        label = "☀  Light" if self.config.theme_mode == "dark" else "🌙  Dark"
+        live_buttons = []
+        for button in self.theme_buttons:
+            try:
+                if button.winfo_exists():
+                    button.configure(text=label)
+                    live_buttons.append(button)
+            except Exception:
+                continue
+        self.theme_buttons = live_buttons
 
     def show_status(self) -> None:
         if not self.config.onboarding_completed:
@@ -384,9 +437,10 @@ class BeaconApp:
         window.protocol("WM_DELETE_WINDOW", self.hide_status)
         header = ttk.Frame(window, padding=16)
         header.pack(fill=X)
-        ttk.Label(
-            header, textvariable=self._state_text(), font=("Segoe UI", 16, "bold")
-        ).pack(anchor="w")
+        self.theme_button(header).pack(side=RIGHT)
+        ttk.Label(header, textvariable=self._state_text(), style="Title.TLabel").pack(
+            anchor="w"
+        )
         ttk.Label(header, text="Click a failed item to open it in Azure Portal.").pack(
             anchor="w", pady=(4, 0)
         )
@@ -405,6 +459,7 @@ class BeaconApp:
             side=RIGHT
         )
         self._refresh_status()
+        apply_theme(self.root, self.config.theme_mode)
 
     def _state_text(self) -> StringVar:
         value = StringVar(value=STATE_LABELS[self.state])
@@ -453,9 +508,12 @@ class BeaconApp:
                 CheckState.UNCONNECTABLE: "UNCONNECTABLE",
                 CheckState.HEALTHY: "HEALTHY",
             }[result.state]
-            ttk.Label(card, text=state_text, font=("Segoe UI", 10, "bold")).pack(
-                anchor="w"
-            )
+            state_style = {
+                CheckState.FAILED: "Failed.TLabel",
+                CheckState.UNCONNECTABLE: "Unknown.TLabel",
+                CheckState.HEALTHY: "Healthy.TLabel",
+            }[result.state]
+            ttk.Label(card, text=state_text, style=state_style).pack(anchor="w")
             ttk.Label(card, text=result.summary, wraplength=470).pack(
                 anchor="w", pady=(3, 0)
             )
@@ -717,10 +775,12 @@ class BeaconApp:
         window.protocol("WM_DELETE_WINDOW", window.destroy)
         body = ttk.Frame(window, padding=24)
         body.pack(fill=BOTH, expand=True)
+        theme = self.theme_button(body)
+        theme.pack(anchor="ne")
         ttk.Label(
             body,
             text="Settings",
-            font=("Segoe UI", 15, "bold"),
+            style="Title.TLabel",
         ).pack(anchor="w")
         ttk.Label(body, text="Windows", font=("Segoe UI", 11, "bold")).pack(
             anchor="w", pady=(18, 4)
@@ -820,13 +880,56 @@ class BeaconApp:
                 self.check_for_updates(interactive=True),
             ),
         ).pack(side=LEFT)
-        ttk.Label(
-            body, textvariable=self.update_status_text, wraplength=530
-        ).pack(anchor="w", side="bottom", pady=(8, 0))
+        ttk.Label(body, textvariable=self.update_status_text, wraplength=530).pack(
+            anchor="w", side="bottom", pady=(8, 0)
+        )
         ttk.Button(buttons, text="Save", command=save).pack(side=RIGHT)
         ttk.Button(buttons, text="Cancel", command=window.destroy).pack(
             side=RIGHT, padx=(0, 8)
         )
+        ttk.Button(buttons, text="About", command=self.show_about).pack(
+            side=RIGHT, padx=(0, 8)
+        )
+        apply_theme(self.root, self.config.theme_mode)
+
+    def show_about(self) -> None:
+        window = Toplevel(self.root)
+        apply_window_branding(window)
+        window.title("About Azure Health Beacon")
+        window.geometry("520x350")
+        window.resizable(False, False)
+        body = ttk.Frame(window, padding=28)
+        body.pack(fill=BOTH, expand=True)
+        self.theme_button(body).pack(anchor="ne")
+        ttk.Label(body, text="Azure Health Beacon", style="Title.TLabel").pack(
+            anchor="w"
+        )
+        ttk.Label(body, text=f"Version {__version__}", style="Muted.TLabel").pack(
+            anchor="w", pady=(2, 18)
+        )
+        ttk.Label(
+            body,
+            text=(
+                "A read-only Windows 11 tray monitor for user-defined Azure signals. "
+                "Authentication stays inside Microsoft's sign-in flow and the Beacon's isolated Azure CLI profile."
+            ),
+            wraplength=450,
+        ).pack(anchor="w")
+        ttk.Label(body, text="Project and source code", style="Section.TLabel").pack(
+            anchor="w", pady=(24, 5)
+        )
+        ttk.Button(
+            body,
+            text="Open GitHub repository ↗",
+            command=lambda: webbrowser.open(PROJECT_URL),
+        ).pack(anchor="w")
+        ttk.Label(body, text=PROJECT_URL, style="Muted.TLabel").pack(
+            anchor="w", pady=(5, 0)
+        )
+        ttk.Button(body, text="Close", command=window.destroy).pack(
+            anchor="e", side="bottom"
+        )
+        apply_theme(self.root, self.config.theme_mode)
 
     def shutdown(self) -> None:
         self.stop_event.set()
@@ -862,6 +965,7 @@ class SetupWizard:
         self.page = ttk.Frame(self.window, padding=24)
         self.page.pack(fill=BOTH, expand=True)
         self._build_sign_in_page()
+        apply_theme(app.root, app.config.theme_mode)
 
     def _clear_page(self) -> None:
         for child in self.page.winfo_children():
@@ -869,8 +973,9 @@ class SetupWizard:
 
     def _build_sign_in_page(self) -> None:
         self._clear_page()
+        self.app.theme_button(self.page).pack(anchor="ne")
         ttk.Label(
-            self.page, text="Connect Azure Health Beacon", font=("Segoe UI", 18, "bold")
+            self.page, text="Connect Azure Health Beacon", style="Title.TLabel"
         ).pack(anchor="w")
         ttk.Label(
             self.page,
@@ -904,6 +1009,7 @@ class SetupWizard:
             actions, text="Sign in with Microsoft", command=self._sign_in
         )
         self.login_button.pack(side=RIGHT)
+        apply_theme(self.app.root, self.app.config.theme_mode)
 
     def _set_sign_in_busy(self, busy: bool) -> None:
         state = ["disabled"] if busy else ["!disabled"]
@@ -941,9 +1047,10 @@ class SetupWizard:
     def _build_subscription_page(self, subscriptions: list[AzureSubscription]) -> None:
         self.subscriptions = subscriptions
         self._clear_page()
-        ttk.Label(
-            self.page, text="Choose the Azure scope", font=("Segoe UI", 18, "bold")
-        ).pack(anchor="w")
+        self.app.theme_button(self.page).pack(anchor="ne")
+        ttk.Label(self.page, text="Choose the Azure scope", style="Title.TLabel").pack(
+            anchor="w"
+        )
         ttk.Label(
             self.page,
             text="Select the subscription the Beacon should validate. This does not change Azure CLI's global subscription.",
@@ -980,6 +1087,7 @@ class SetupWizard:
         )
         self.finish_button.pack(anchor="e", pady=(28, 0))
         self.finish_button.state(["disabled"])
+        apply_theme(self.app.root, self.app.config.theme_mode)
 
     def _validate(self) -> None:
         index = self.subscription_choice.current()
@@ -1034,21 +1142,32 @@ class CheckManager:
         self.app = app
         self.window = Toplevel(app.root)
         apply_window_branding(self.window)
-        self.window.title("Manage Azure checks")
-        self.window.geometry("940x700")
-        self.window.minsize(860, 620)
+        self.window.title("Azure Health Beacon — Rule Studio")
+        self.window.geometry("1180x790")
+        self.window.minsize(980, 680)
         self.working = load_config()
         self.selected_id: str | None = None
         self.draft_id = str(uuid.uuid4())
-        self.kind = StringVar(value="Provisioning state")
+        self.kind = StringVar(value=SIGNAL_SOURCES[0].label)
         self.name = StringVar()
         self.reference = StringVar()
         self.tenant = StringVar()
         self.expected = StringVar(value="Succeeded")
         self.template = StringVar(value="Active Azure Monitor alerts")
+        self.workspace_id = StringVar()
+        self.lookback = StringVar(value="5")
+        self.metric_name = StringVar()
+        self.metric_namespace = StringVar()
+        self.metric_aggregation = StringVar(value="Average")
+        self.metric_reducer = StringVar(value=METRIC_REDUCERS["latest"])
+        self.metric_operator = StringVar(value=METRIC_OPERATORS["gt"])
+        self.metric_threshold = StringVar(value="0")
+        self.metric_filter = StringVar()
         self.enabled = BooleanVar(value=True)
         self.last_tested_fingerprint: tuple[object, ...] | None = None
-        self.test_status = StringVar(value="Define a check, then test it before applying.")
+        self.test_status = StringVar(
+            value="Define a check, then test it before applying."
+        )
         self._build()
         for variable in (
             self.kind,
@@ -1056,26 +1175,59 @@ class CheckManager:
             self.reference,
             self.tenant,
             self.expected,
+            self.workspace_id,
+            self.lookback,
+            self.metric_name,
+            self.metric_namespace,
+            self.metric_aggregation,
+            self.metric_reducer,
+            self.metric_operator,
+            self.metric_threshold,
+            self.metric_filter,
             self.enabled,
         ):
             variable.trace_add("write", self._invalidate_test)
         self.kind.trace_add("write", self._kind_changed)
         self._refresh_list()
         self._kind_changed()
+        apply_theme(app.root, app.config.theme_mode)
 
     def _build(self) -> None:
-        outer = ttk.Frame(self.window, padding=14)
+        outer = ttk.Frame(self.window, padding=20)
         outer.pack(fill=BOTH, expand=True)
-        left = ttk.Frame(outer)
-        left.pack(side=LEFT, fill=Y, padx=(0, 14))
-        ttk.Label(left, text="Configured checks", font=("Segoe UI", 11, "bold")).pack(
-            anchor="w"
+        header = ttk.Frame(outer)
+        header.pack(fill=X, pady=(0, 16))
+        self.app.theme_button(header).pack(side=RIGHT)
+        ttk.Label(header, text="Rule Studio", style="Title.TLabel").pack(anchor="w")
+        ttk.Label(
+            header,
+            text="Browse what Azure exposes, define what should be a finding, test it live, then enable it.",
+            style="Muted.TLabel",
+        ).pack(anchor="w", pady=(3, 0))
+
+        body = ttk.Panedwindow(outer, orient="horizontal")
+        body.pack(fill=BOTH, expand=True)
+        left = ttk.Frame(body, padding=(0, 0, 14, 0))
+        body.add(left, weight=1)
+        ttk.Label(left, text="YOUR RULES", style="Section.TLabel").pack(anchor="w")
+        self.rule_tree = ttk.Treeview(
+            left, columns=("source", "state"), show="tree headings", height=22
         )
-        self.listbox = __import__("tkinter").Listbox(left, width=31, height=24)
-        self.listbox.pack(fill=Y, expand=True, pady=(8, 8))
-        self.listbox.bind("<<ListboxSelect>>", self._select)
-        ttk.Button(left, text="New check", command=self._new).pack(fill=X)
-        ttk.Button(left, text="Remove selected", command=self._remove).pack(
+        self.rule_tree.heading("#0", text="Name")
+        self.rule_tree.heading("source", text="Source")
+        self.rule_tree.heading("state", text="State")
+        self.rule_tree.column("#0", width=180, minwidth=130)
+        self.rule_tree.column("source", width=80, minwidth=70)
+        self.rule_tree.column("state", width=65, minwidth=60)
+        self.rule_tree.pack(fill=BOTH, expand=True, pady=(8, 10))
+        self.rule_tree.bind("<<TreeviewSelect>>", self._select)
+        ttk.Button(
+            left, text="＋  New rule", style="Accent.TButton", command=self._new
+        ).pack(fill=X)
+        ttk.Button(left, text="Discover Azure signals…", command=self._discover).pack(
+            fill=X, pady=(7, 0)
+        )
+        ttk.Button(left, text="Delete selected", command=self._remove).pack(
             fill=X, pady=(6, 0)
         )
         ttk.Separator(left).pack(fill=X, pady=12)
@@ -1086,20 +1238,18 @@ class CheckManager:
             fill=X, pady=(6, 0)
         )
 
-        form = ttk.Frame(outer)
-        form.pack(side=LEFT, fill=BOTH, expand=True)
-        ttk.Label(form, text="Check details", font=("Segoe UI", 11, "bold")).pack(
-            anchor="w"
-        )
-        ttk.Label(form, text="Check type").pack(anchor="w", pady=(10, 2))
+        form = ttk.Frame(body, padding=(18, 0, 0, 0))
+        body.add(form, weight=3)
+        ttk.Label(form, text="RULE DEFINITION", style="Section.TLabel").pack(anchor="w")
+        ttk.Label(form, text="Signal source").pack(anchor="w", pady=(10, 2))
         self.kind_choice = ttk.Combobox(
             form,
             textvariable=self.kind,
-            values=("Provisioning state", "Resource Graph / KQL findings"),
+            values=tuple(source.label for source in SIGNAL_SOURCES),
             state="readonly",
         )
         self.kind_choice.pack(fill=X)
-        self._field(form, "Friendly name", self.name)
+        self._field(form, "Rule name (editable)", self.name)
 
         self.provisioning_form = ttk.Frame(form)
         self._field(
@@ -1121,26 +1271,45 @@ class CheckManager:
         self.graph_form = ttk.Frame(form)
         ttk.Label(
             self.graph_form,
-            text="Runs across all enabled subscriptions available to this login.",
+            text="Searches every enabled subscription available to this login. Return one row per problem.",
             wraplength=540,
         ).pack(anchor="w", pady=(10, 6))
-        ttk.Label(self.graph_form, text="Starting template").pack(anchor="w")
+        self.log_form = ttk.Frame(form)
+        ttk.Label(
+            self.log_form,
+            text="Full Azure Monitor KQL for logs and workspace-based Application Insights.",
+            wraplength=680,
+        ).pack(anchor="w", pady=(10, 4))
+        self._field(self.log_form, "Log Analytics workspace ID", self.workspace_id)
+        self._field(self.log_form, "Lookback window (minutes)", self.lookback)
+        ttk.Button(
+            self.log_form,
+            text="Browse workspaces and tables…",
+            command=self._discover,
+        ).pack(anchor="w", pady=(8, 0))
+
+        self.query_form = ttk.Frame(form)
+        self.query_help = ttk.Label(
+            self.query_form,
+            text="Zero rows is healthy; every returned row becomes a red finding.",
+            wraplength=680,
+        )
+        self.query_help.pack(anchor="w", pady=(8, 6))
+        ttk.Label(self.query_form, text="Starting template").pack(anchor="w")
         template_values = (*GRAPH_TEMPLATES.keys(), "Custom KQL findings query")
         self.template_choice = ttk.Combobox(
-            self.graph_form,
+            self.query_form,
             textvariable=self.template,
             values=template_values,
             state="readonly",
         )
         self.template_choice.pack(fill=X, pady=(2, 8))
         self.template_choice.bind("<<ComboboxSelected>>", self._apply_template)
-        ttk.Label(
-            self.graph_form,
-            text="KQL findings query — zero rows is healthy; any row is a confirmed failure",
-        ).pack(anchor="w")
+        self.query_label = ttk.Label(self.query_form, text="KQL findings query")
+        self.query_label.pack(anchor="w")
         self.query_text = Text(
-            self.graph_form,
-            height=15,
+            self.query_form,
+            height=13,
             wrap="none",
             font=("Cascadia Mono", 9),
             undo=True,
@@ -1148,6 +1317,69 @@ class CheckManager:
         self.query_text.pack(fill=BOTH, expand=True, pady=(2, 0))
         self.query_text.bind("<<Modified>>", self._query_modified)
         self._set_query(GRAPH_TEMPLATES["Active Azure Monitor alerts"])
+
+        self.metric_form = ttk.Frame(form)
+        ttk.Label(
+            self.metric_form,
+            text="Read any Azure Monitor metric exposed by a resource and trip when the condition is true.",
+            wraplength=680,
+        ).pack(anchor="w", pady=(10, 2))
+        self._field(self.metric_form, "Azure Portal URL or resource ID", self.reference)
+        ttk.Button(
+            self.metric_form,
+            text="Browse resources and metric definitions…",
+            command=self._discover,
+        ).pack(anchor="w", pady=(7, 0))
+        self._field(self.metric_form, "Metric name", self.metric_name)
+        self._field(
+            self.metric_form, "Metric namespace (optional)", self.metric_namespace
+        )
+        metric_row = ttk.Frame(self.metric_form)
+        metric_row.pack(fill=X, pady=(10, 0))
+        ttk.Label(metric_row, text="Azure aggregation").grid(
+            row=0, column=0, sticky="w"
+        )
+        ttk.Label(metric_row, text="Evaluate").grid(
+            row=0, column=1, sticky="w", padx=(10, 0)
+        )
+        ttk.Label(metric_row, text="Condition").grid(
+            row=0, column=2, sticky="w", padx=(10, 0)
+        )
+        ttk.Label(metric_row, text="Threshold").grid(
+            row=0, column=3, sticky="w", padx=(10, 0)
+        )
+        ttk.Combobox(
+            metric_row,
+            textvariable=self.metric_aggregation,
+            values=("Average", "Count", "Maximum", "Minimum", "Total"),
+            state="readonly",
+            width=12,
+        ).grid(row=1, column=0, sticky="ew")
+        ttk.Combobox(
+            metric_row,
+            textvariable=self.metric_reducer,
+            values=tuple(METRIC_REDUCERS.values()),
+            state="readonly",
+            width=10,
+        ).grid(row=1, column=1, sticky="ew", padx=(10, 0))
+        ttk.Combobox(
+            metric_row,
+            textvariable=self.metric_operator,
+            values=tuple(METRIC_OPERATORS.values()),
+            state="readonly",
+            width=7,
+        ).grid(row=1, column=2, sticky="ew", padx=(10, 0))
+        ttk.Entry(metric_row, textvariable=self.metric_threshold, width=12).grid(
+            row=1, column=3, sticky="ew", padx=(10, 0)
+        )
+        for column in range(4):
+            metric_row.columnconfigure(column, weight=1)
+        self._field(self.metric_form, "Lookback window (minutes)", self.lookback)
+        self._field(
+            self.metric_form,
+            "Dimension filter (optional, for example ApiName eq 'GetBlob')",
+            self.metric_filter,
+        )
 
         self.enabled_check = ttk.Checkbutton(
             form, text="Enabled", variable=self.enabled
@@ -1162,7 +1394,10 @@ class CheckManager:
             side=LEFT
         )
         self.apply_button = ttk.Button(
-            actions, text="Apply tested rule", command=self._save_check
+            actions,
+            text="Save tested rule",
+            style="Accent.TButton",
+            command=self._save_check,
         )
         self.apply_button.pack(side=RIGHT)
         self.apply_button.state(["disabled"])
@@ -1179,61 +1414,134 @@ class CheckManager:
         ttk.Entry(parent, textvariable=variable).pack(fill=X)
 
     def _refresh_list(self) -> None:
-        self.listbox.delete(0, END)
+        for item in self.rule_tree.get_children():
+            self.rule_tree.delete(item)
         for check in self.working.checks:
-            marker = "" if check.enabled else " (disabled)"
-            check_type = "KQL" if check.kind == "azure_resource_graph" else "State"
-            self.listbox.insert(END, f"[{check_type}] {check.name}{marker}")
+            source = SOURCE_BY_KEY.get(check.kind, SIGNAL_SOURCES[0])
+            short_label = {
+                "Resource property": "Property",
+                "Resource Graph": "Graph",
+                "Logs / Application Insights": "Logs",
+                "Azure Monitor metric": "Metric",
+            }.get(source.label, source.label)
+            self.rule_tree.insert(
+                "",
+                END,
+                iid=check.id,
+                text=check.name,
+                values=(short_label, "On" if check.enabled else "Off"),
+            )
 
     def _select(self, _event: object = None) -> None:
-        selection = self.listbox.curselection()
+        selection = self.rule_tree.selection()
         if not selection:
             return
-        check = self.working.checks[selection[0]]
-        self.selected_id = check.id
-        self.kind.set(
-            "Resource Graph / KQL findings"
-            if check.kind == "azure_resource_graph"
-            else "Provisioning state"
+        check = next(
+            (item for item in self.working.checks if item.id == selection[0]), None
         )
+        if check is None:
+            return
+        self.selected_id = check.id
+        self.kind.set(SOURCE_BY_KEY.get(check.kind, SIGNAL_SOURCES[0]).label)
         self.name.set(check.name)
         self.reference.set(check.portal_url or check.resource_id)
         self.tenant.set(check.tenant_id)
         self.expected.set(", ".join(check.expected_values))
+        self.workspace_id.set(check.workspace_id)
+        self.lookback.set(str(check.lookback_minutes))
+        self.metric_name.set(check.metric_name)
+        self.metric_namespace.set(check.metric_namespace)
+        self.metric_aggregation.set(check.metric_aggregation)
+        self.metric_reducer.set(
+            METRIC_REDUCERS.get(check.metric_reducer, METRIC_REDUCERS["latest"])
+        )
+        self.metric_operator.set(
+            METRIC_OPERATORS.get(check.metric_operator, METRIC_OPERATORS["gt"])
+        )
+        self.metric_threshold.set(f"{check.metric_threshold:g}")
+        self.metric_filter.set(check.metric_filter)
         self._set_query(check.query)
-        self.template.set("Custom KQL findings query")
+        self.template.set(
+            "Custom log query"
+            if check.kind == "azure_log_analytics"
+            else "Custom KQL findings query"
+        )
         self.enabled.set(check.enabled)
-        self.test_status.set("Ready to test or edit.")
+        self.test_status.set(
+            "Edit or rename anything, then test before saving changes."
+        )
 
     def _new(self) -> None:
         self.selected_id = None
         self.draft_id = str(uuid.uuid4())
-        self.kind.set("Provisioning state")
+        self.kind.set(SIGNAL_SOURCES[0].label)
         self.name.set("")
         self.reference.set("")
         self.tenant.set("")
         self.expected.set("Succeeded")
         self.template.set("Active Azure Monitor alerts")
         self._set_query(GRAPH_TEMPLATES["Active Azure Monitor alerts"])
+        self.workspace_id.set("")
+        self.lookback.set("5")
+        self.metric_name.set("")
+        self.metric_namespace.set("")
+        self.metric_aggregation.set("Average")
+        self.metric_reducer.set(METRIC_REDUCERS["latest"])
+        self.metric_operator.set(METRIC_OPERATORS["gt"])
+        self.metric_threshold.set("0")
+        self.metric_filter.set("")
         self.enabled.set(True)
-        self.listbox.selection_clear(0, END)
-        self.test_status.set("Paste an Azure Portal resource URL or resource ID.")
+        self.rule_tree.selection_remove(*self.rule_tree.selection())
+        self.test_status.set("Choose a signal source or open Discover Azure signals.")
 
     def _kind_changed(self, *_args: object) -> None:
         if not hasattr(self, "provisioning_form"):
             return
         self.provisioning_form.pack_forget()
         self.graph_form.pack_forget()
-        if self.kind.get() == "Resource Graph / KQL findings":
-            self.graph_form.pack(
-                fill=BOTH, expand=True, before=self.enabled_check
+        self.log_form.pack_forget()
+        self.metric_form.pack_forget()
+        self.query_form.pack_forget()
+        source_key = SOURCE_KEY_BY_LABEL.get(
+            self.kind.get(), "azure_resource_provisioning"
+        )
+        if source_key == "azure_resource_graph":
+            self.graph_form.pack(fill=X, before=self.enabled_check)
+            self.query_form.pack(fill=BOTH, expand=True, before=self.enabled_check)
+            values = (*GRAPH_TEMPLATES.keys(), "Custom KQL findings query")
+            self.template_choice.configure(values=values)
+            if self.template.get() not in values:
+                self.template.set("Custom KQL findings query")
+            self.query_label.configure(text="Resource Graph KQL findings query")
+            self.query_help.configure(
+                text="Zero rows is healthy; every returned row becomes a confirmed finding. Runs across accessible subscriptions."
             )
             self.test_status.set(
                 "The query is read-only. Test it live before applying the rule."
             )
+        elif source_key == "azure_log_analytics":
+            self.log_form.pack(fill=X, before=self.enabled_check)
+            self.query_form.pack(fill=BOTH, expand=True, before=self.enabled_check)
+            values = (*LOG_TEMPLATES.keys(), "Custom log query")
+            self.template_choice.configure(values=values)
+            if self.template.get() not in values:
+                self.template.set("Custom log query")
+            self.query_label.configure(text="Azure Monitor / Application Insights KQL")
+            self.query_help.configure(
+                text="Return one row per problem. Query errors or missing table access are grey, not green."
+            )
+            self.test_status.set(
+                "Select a workspace, write or choose KQL, then test against live logs."
+            )
+        elif source_key == "azure_monitor_metric":
+            self.metric_form.pack(fill=BOTH, expand=True, before=self.enabled_check)
+            self.test_status.set(
+                "Browse a resource's metric definitions, choose a condition, then test it."
+            )
         else:
             self.provisioning_form.pack(fill=X, before=self.enabled_check)
             self.test_status.set("Paste an Azure Portal resource URL or resource ID.")
+        apply_theme(self.app.root, self.app.config.theme_mode)
 
     def _set_query(self, value: str) -> None:
         self.query_text.delete("1.0", END)
@@ -1247,7 +1555,10 @@ class CheckManager:
 
     def _apply_template(self, _event: object = None) -> None:
         selected = self.template.get()
-        query = GRAPH_TEMPLATES.get(selected, CUSTOM_TEMPLATE)
+        if SOURCE_KEY_BY_LABEL.get(self.kind.get()) == "azure_log_analytics":
+            query = LOG_TEMPLATES.get(selected, CUSTOM_LOG_TEMPLATE)
+        else:
+            query = GRAPH_TEMPLATES.get(selected, CUSTOM_TEMPLATE)
         self._set_query(query)
         if not self.name.get().strip():
             self.name.set(selected.replace("Azure ", ""))
@@ -1271,10 +1582,22 @@ class CheckManager:
             definition.kind,
             definition.query,
             definition.scope,
+            definition.workspace_id,
+            definition.lookback_minutes,
+            definition.metric_name,
+            definition.metric_namespace,
+            definition.metric_aggregation,
+            definition.metric_reducer,
+            definition.metric_operator,
+            definition.metric_threshold,
+            definition.metric_filter,
         )
 
     def _definition_from_form(self) -> CheckDefinition:
-        if self.kind.get() == "Resource Graph / KQL findings":
+        source_key = SOURCE_KEY_BY_LABEL.get(
+            self.kind.get(), "azure_resource_provisioning"
+        )
+        if source_key == "azure_resource_graph":
             definition = CheckDefinition(
                 id=self.selected_id or self.draft_id,
                 name=self.name.get().strip(),
@@ -1286,6 +1609,47 @@ class CheckManager:
                 kind="azure_resource_graph",
                 query=self.query_text.get("1.0", "end-1c"),
                 scope="all_accessible",
+            )
+            validate_definition(definition)
+            return definition
+        if source_key == "azure_log_analytics":
+            definition = CheckDefinition(
+                id=self.selected_id or self.draft_id,
+                name=self.name.get().strip(),
+                resource_id="",
+                portal_url="",
+                tenant_id="",
+                expected_values=[],
+                enabled=self.enabled.get(),
+                kind="azure_log_analytics",
+                query=self.query_text.get("1.0", "end-1c"),
+                scope="workspace",
+                workspace_id=self.workspace_id.get().strip(),
+                lookback_minutes=int(self.lookback.get()),
+            )
+            validate_definition(definition)
+            return definition
+        if source_key == "azure_monitor_metric":
+            resource_id, portal_url, _tenant_hint = parse_resource_reference(
+                self.reference.get()
+            )
+            definition = CheckDefinition(
+                id=self.selected_id or self.draft_id,
+                name=self.name.get().strip(),
+                resource_id=resource_id,
+                portal_url=portal_url,
+                expected_values=[],
+                enabled=self.enabled.get(),
+                kind="azure_monitor_metric",
+                scope="resource",
+                lookback_minutes=int(self.lookback.get()),
+                metric_name=self.metric_name.get().strip(),
+                metric_namespace=self.metric_namespace.get().strip(),
+                metric_aggregation=self.metric_aggregation.get(),
+                metric_reducer=METRIC_REDUCER_BY_LABEL[self.metric_reducer.get()],
+                metric_operator=METRIC_OPERATOR_BY_LABEL[self.metric_operator.get()],
+                metric_threshold=float(self.metric_threshold.get()),
+                metric_filter=self.metric_filter.get().strip(),
             )
             validate_definition(definition)
             return definition
@@ -1373,6 +1737,13 @@ class CheckManager:
             self.last_tested_fingerprint = tested_fingerprint
             self.apply_button.state(["!disabled"])
 
+    def _save_working(self) -> None:
+        # Preserve settings that can change while Rule Studio is open.
+        latest = load_config()
+        latest.checks = self.working.checks
+        save_config(latest)
+        self.working = latest
+
     def _save_check(self) -> None:
         try:
             definition = self._definition_from_form()
@@ -1394,7 +1765,7 @@ class CheckManager:
                 self.working.checks.append(definition)
             else:
                 self.working.checks[existing] = definition
-            save_config(self.working)
+            self._save_working()
         except Exception as error:
             messagebox.showerror("Could not save check", str(error), parent=self.window)
             return
@@ -1405,19 +1776,64 @@ class CheckManager:
         self.app.reload_config()
 
     def _remove(self) -> None:
-        selection = self.listbox.curselection()
+        selection = self.rule_tree.selection()
         if not selection:
             return
-        check = self.working.checks[selection[0]]
+        check = next(
+            (item for item in self.working.checks if item.id == selection[0]), None
+        )
+        if check is None:
+            return
         if not messagebox.askyesno(
             "Remove check", f"Remove ‘{check.name}’?", parent=self.window
         ):
             return
-        self.working.checks.pop(selection[0])
-        save_config(self.working)
+        self.working.checks = [
+            item for item in self.working.checks if item.id != check.id
+        ]
+        self._save_working()
         self._new()
         self._refresh_list()
         self.app.reload_config()
+
+    def _discover(self) -> None:
+        SignalExplorer(self)
+
+    def use_workspace(self, workspace: AzureWorkspace, table: str = "") -> None:
+        self.kind.set(SOURCE_BY_KEY["azure_log_analytics"].label)
+        self.workspace_id.set(workspace.customer_id)
+        if table:
+            self.template.set("Custom log query")
+            self._set_query(f"{table}\n| where TimeGenerated > ago(5m)\n| take 10")
+            if not self.name.get().strip():
+                self.name.set(f"{table} findings")
+        self.test_status.set(
+            f"Selected workspace {workspace.name}. Review the query and test it live."
+        )
+
+    def use_metric(
+        self, resource: AzureResource, metric: AzureMetricDefinition
+    ) -> None:
+        self.kind.set(SOURCE_BY_KEY["azure_monitor_metric"].label)
+        self.reference.set(resource.resource_id)
+        self.metric_name.set(metric.name)
+        self.metric_namespace.set(metric.namespace)
+        if metric.aggregations:
+            preferred = next(
+                (
+                    value
+                    for value in ("Average", "Maximum", "Total", "Count", "Minimum")
+                    if value in metric.aggregations
+                ),
+                metric.aggregations[0],
+            )
+            self.metric_aggregation.set(preferred)
+        if not self.name.get().strip():
+            self.name.set(f"{resource.name} — {metric.display_name}")
+        dimensions = ", ".join(metric.dimensions) or "none"
+        self.test_status.set(
+            f"Selected {metric.display_name} ({metric.unit or 'unitless'}). Available dimensions: {dimensions}."
+        )
 
     def _export_rules(self) -> None:
         target = filedialog.asksaveasfilename(
@@ -1478,7 +1894,7 @@ class CheckManager:
             else:
                 self.working.checks.append(check)
         try:
-            save_config(self.working)
+            self._save_working()
         except Exception as error:
             messagebox.showerror(
                 "Could not save imported rules", str(error), parent=self.window
@@ -1489,6 +1905,303 @@ class CheckManager:
         self.test_status.set(
             f"Imported {len(imported)} disabled rules. Review and test before enabling."
         )
+
+
+class SignalExplorer:
+    """Read-only catalogue of signal surfaces available to the signed-in identity."""
+
+    def __init__(self, manager: CheckManager) -> None:
+        self.manager = manager
+        self.app = manager.app
+        self.window = Toplevel(manager.window)
+        apply_window_branding(self.window)
+        self.window.title("Discover Azure signals")
+        self.window.geometry("1050x720")
+        self.window.minsize(900, 620)
+        self.workspaces: list[AzureWorkspace] = []
+        self.resources: list[AzureResource] = []
+        self.metrics: list[AzureMetricDefinition] = []
+        self.selected_workspace: AzureWorkspace | None = None
+        self.selected_resource: AzureResource | None = None
+        self.status = StringVar(
+            value="Nothing is downloaded or persisted. Discovery reads only metadata visible to your Azure identity."
+        )
+        self._build()
+        apply_theme(self.app.root, self.app.config.theme_mode)
+
+    def _build(self) -> None:
+        outer = ttk.Frame(self.window, padding=20)
+        outer.pack(fill=BOTH, expand=True)
+        header = ttk.Frame(outer)
+        header.pack(fill=X, pady=(0, 14))
+        self.app.theme_button(header).pack(side=RIGHT)
+        ttk.Label(header, text="Discover Azure signals", style="Title.TLabel").pack(
+            anchor="w"
+        )
+        ttk.Label(
+            header,
+            text="Start from Azure's live schemas and definitions, then decide what matters.",
+            style="Muted.TLabel",
+        ).pack(anchor="w", pady=(3, 0))
+        notebook = ttk.Notebook(outer)
+        notebook.pack(fill=BOTH, expand=True)
+        self._build_logs_tab(notebook)
+        self._build_metrics_tab(notebook)
+        self._build_graph_tab(notebook)
+        ttk.Label(outer, textvariable=self.status, style="Muted.TLabel").pack(
+            fill=X, pady=(12, 0)
+        )
+
+    def _build_logs_tab(self, notebook: ttk.Notebook) -> None:
+        tab = ttk.Frame(notebook, padding=14)
+        notebook.add(tab, text="Logs & Application Insights")
+        ttk.Label(
+            tab,
+            text="Choose a workspace, inspect the tables its schema exposes, then use a table as the beginning of your own KQL rule.",
+            wraplength=900,
+        ).pack(anchor="w", pady=(0, 10))
+        panes = ttk.Panedwindow(tab, orient="horizontal")
+        panes.pack(fill=BOTH, expand=True)
+        workspace_frame = ttk.Frame(panes, padding=(0, 0, 10, 0))
+        table_frame = ttk.Frame(panes, padding=(10, 0, 0, 0))
+        panes.add(workspace_frame, weight=2)
+        panes.add(table_frame, weight=1)
+        ttk.Label(
+            workspace_frame, text="Readable workspaces", style="Section.TLabel"
+        ).pack(anchor="w")
+        self.workspace_tree = ttk.Treeview(
+            workspace_frame,
+            columns=("group", "subscription"),
+            show="tree headings",
+        )
+        self.workspace_tree.heading("#0", text="Workspace")
+        self.workspace_tree.heading("group", text="Resource group")
+        self.workspace_tree.heading("subscription", text="Subscription")
+        self.workspace_tree.column("#0", width=190)
+        self.workspace_tree.column("group", width=160)
+        self.workspace_tree.column("subscription", width=220)
+        self.workspace_tree.pack(fill=BOTH, expand=True, pady=(8, 8))
+        self.workspace_tree.bind("<<TreeviewSelect>>", self._workspace_selected)
+        ttk.Button(
+            workspace_frame,
+            text="Load accessible workspaces",
+            style="Accent.TButton",
+            command=self._load_workspaces,
+        ).pack(fill=X)
+        ttk.Label(table_frame, text="Available tables", style="Section.TLabel").pack(
+            anchor="w"
+        )
+        self.table_tree = ttk.Treeview(table_frame, show="tree")
+        self.table_tree.pack(fill=BOTH, expand=True, pady=(8, 8))
+        self.table_tree.bind("<Double-1>", lambda _event: self._use_table())
+        ttk.Button(
+            table_frame,
+            text="Use selected table",
+            command=self._use_table,
+        ).pack(fill=X)
+
+    def _build_metrics_tab(self, notebook: ttk.Notebook) -> None:
+        tab = ttk.Frame(notebook, padding=14)
+        notebook.add(tab, text="Metrics")
+        ttk.Label(
+            tab,
+            text="Select any readable ARM resource, then inspect the Azure Monitor metrics, aggregations, units, and dimensions it exposes.",
+            wraplength=900,
+        ).pack(anchor="w", pady=(0, 10))
+        panes = ttk.Panedwindow(tab, orient="horizontal")
+        panes.pack(fill=BOTH, expand=True)
+        resource_frame = ttk.Frame(panes, padding=(0, 0, 10, 0))
+        metric_frame = ttk.Frame(panes, padding=(10, 0, 0, 0))
+        panes.add(resource_frame, weight=2)
+        panes.add(metric_frame, weight=2)
+        ttk.Label(
+            resource_frame, text="Readable resources", style="Section.TLabel"
+        ).pack(anchor="w")
+        self.resource_tree = ttk.Treeview(
+            resource_frame, columns=("type", "group"), show="tree headings"
+        )
+        self.resource_tree.heading("#0", text="Resource")
+        self.resource_tree.heading("type", text="Type")
+        self.resource_tree.heading("group", text="Resource group")
+        self.resource_tree.column("#0", width=180)
+        self.resource_tree.column("type", width=230)
+        self.resource_tree.column("group", width=140)
+        self.resource_tree.pack(fill=BOTH, expand=True, pady=(8, 8))
+        self.resource_tree.bind("<<TreeviewSelect>>", self._resource_selected)
+        ttk.Button(
+            resource_frame,
+            text="Load accessible resources",
+            style="Accent.TButton",
+            command=self._load_resources,
+        ).pack(fill=X)
+        ttk.Label(metric_frame, text="Metric definitions", style="Section.TLabel").pack(
+            anchor="w"
+        )
+        self.metric_tree = ttk.Treeview(
+            metric_frame, columns=("unit", "aggregations"), show="tree headings"
+        )
+        self.metric_tree.heading("#0", text="Metric")
+        self.metric_tree.heading("unit", text="Unit")
+        self.metric_tree.heading("aggregations", text="Aggregations")
+        self.metric_tree.column("#0", width=190)
+        self.metric_tree.column("unit", width=80)
+        self.metric_tree.column("aggregations", width=170)
+        self.metric_tree.pack(fill=BOTH, expand=True, pady=(8, 8))
+        self.metric_tree.bind("<Double-1>", lambda _event: self._use_metric())
+        ttk.Button(
+            metric_frame, text="Use selected metric", command=self._use_metric
+        ).pack(fill=X)
+
+    def _build_graph_tab(self, notebook: ttk.Notebook) -> None:
+        tab = ttk.Frame(notebook, padding=18)
+        notebook.add(tab, text="Resource Graph")
+        ttk.Label(
+            tab,
+            text="Resource Graph exposes inventory and control-plane data across subscriptions. Pick a transparent starter query or write your own in Rule Studio.",
+            wraplength=880,
+        ).pack(anchor="w", pady=(0, 12))
+        self.graph_template = StringVar(value=next(iter(GRAPH_TEMPLATES)))
+        choices = ttk.Treeview(tab, show="tree", height=10)
+        choices.pack(fill=BOTH, expand=True)
+        for name in GRAPH_TEMPLATES:
+            choices.insert("", END, iid=name, text=name)
+        choices.selection_set(self.graph_template.get())
+
+        def use_graph() -> None:
+            selection = choices.selection()
+            if not selection:
+                return
+            name = selection[0]
+            self.manager.kind.set(SOURCE_BY_KEY["azure_resource_graph"].label)
+            self.manager.template.set(name)
+            self.manager._set_query(GRAPH_TEMPLATES[name])
+            if not self.manager.name.get().strip():
+                self.manager.name.set(name)
+            self.manager.test_status.set(
+                "Starter query selected. Review every line and test it live before saving."
+            )
+            self.window.destroy()
+
+        ttk.Button(
+            tab, text="Use selected starter", style="Accent.TButton", command=use_graph
+        ).pack(anchor="e", pady=(10, 0))
+
+    def _load_workspaces(self) -> None:
+        self.status.set("Reading accessible Log Analytics workspaces…")
+
+        def worker() -> None:
+            workspaces, errors = discover_workspaces()
+            self.window.after(0, lambda: self._show_workspaces(workspaces, errors))
+
+        threading.Thread(target=worker, name="discover-workspaces", daemon=True).start()
+
+    def _show_workspaces(
+        self, workspaces: list[AzureWorkspace], errors: list[str]
+    ) -> None:
+        self.workspaces = workspaces
+        for item in self.workspace_tree.get_children():
+            self.workspace_tree.delete(item)
+        for index, workspace in enumerate(workspaces):
+            self.workspace_tree.insert(
+                "",
+                END,
+                iid=str(index),
+                text=workspace.name,
+                values=(workspace.resource_group, workspace.subscription_id),
+            )
+        suffix = f" Partial scope: {errors[0]}" if errors else ""
+        self.status.set(f"Found {len(workspaces)} readable workspace(s).{suffix}")
+
+    def _workspace_selected(self, _event: object = None) -> None:
+        selection = self.workspace_tree.selection()
+        if not selection:
+            return
+        self.selected_workspace = self.workspaces[int(selection[0])]
+        self.status.set(f"Reading schema for {self.selected_workspace.name}…")
+
+        def worker() -> None:
+            tables, error = discover_workspace_tables(self.selected_workspace)
+            self.window.after(0, lambda: self._show_tables(tables, error))
+
+        threading.Thread(target=worker, name="discover-log-tables", daemon=True).start()
+
+    def _show_tables(self, tables: list[str], error: str) -> None:
+        for item in self.table_tree.get_children():
+            self.table_tree.delete(item)
+        for table in tables:
+            self.table_tree.insert("", END, iid=table, text=table)
+        self.status.set(
+            error or f"Found {len(tables)} table(s) in the workspace schema."
+        )
+
+    def _use_table(self) -> None:
+        selection = self.table_tree.selection()
+        if not selection or self.selected_workspace is None:
+            return
+        self.manager.use_workspace(self.selected_workspace, selection[0])
+        self.window.destroy()
+
+    def _load_resources(self) -> None:
+        self.status.set("Reading accessible Azure resources…")
+
+        def worker() -> None:
+            resources, errors = discover_resources()
+            self.window.after(0, lambda: self._show_resources(resources, errors))
+
+        threading.Thread(target=worker, name="discover-resources", daemon=True).start()
+
+    def _show_resources(
+        self, resources: list[AzureResource], errors: list[str]
+    ) -> None:
+        self.resources = resources
+        for item in self.resource_tree.get_children():
+            self.resource_tree.delete(item)
+        for index, resource in enumerate(resources):
+            self.resource_tree.insert(
+                "",
+                END,
+                iid=str(index),
+                text=resource.name,
+                values=(resource.resource_type, resource.resource_group),
+            )
+        suffix = f" Partial scope: {errors[0]}" if errors else ""
+        self.status.set(f"Found {len(resources)} readable resource(s).{suffix}")
+
+    def _resource_selected(self, _event: object = None) -> None:
+        selection = self.resource_tree.selection()
+        if not selection:
+            return
+        self.selected_resource = self.resources[int(selection[0])]
+        self.status.set(f"Reading metrics for {self.selected_resource.name}…")
+
+        def worker() -> None:
+            metrics, error = discover_metric_definitions(
+                self.selected_resource.resource_id
+            )
+            self.window.after(0, lambda: self._show_metrics(metrics, error))
+
+        threading.Thread(target=worker, name="discover-metrics", daemon=True).start()
+
+    def _show_metrics(self, metrics: list[AzureMetricDefinition], error: str) -> None:
+        self.metrics = metrics
+        for item in self.metric_tree.get_children():
+            self.metric_tree.delete(item)
+        for index, metric in enumerate(metrics):
+            self.metric_tree.insert(
+                "",
+                END,
+                iid=str(index),
+                text=metric.display_name,
+                values=(metric.unit, ", ".join(metric.aggregations)),
+            )
+        self.status.set(error or f"Found {len(metrics)} metric definition(s).")
+
+    def _use_metric(self) -> None:
+        selection = self.metric_tree.selection()
+        if not selection or self.selected_resource is None:
+            return
+        self.manager.use_metric(self.selected_resource, self.metrics[int(selection[0])])
+        self.window.destroy()
 
 
 def configure_logging() -> None:
