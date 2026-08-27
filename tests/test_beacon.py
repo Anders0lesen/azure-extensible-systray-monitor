@@ -16,6 +16,8 @@ from azure_health_beacon.azure import (
     delete_isolated_azure_state,
     interactive_login,
     list_subscriptions,
+    run_log_analytics_check,
+    run_metric_check,
     run_resource_graph_check,
     validate_subscription_access,
 )
@@ -126,7 +128,7 @@ class ConfigurationTests(unittest.TestCase):
                 encoding="utf-8",
             )
             loaded = load_config(path)
-            self.assertEqual(loaded.schema_version, 4)
+            self.assertEqual(loaded.schema_version, 5)
             self.assertFalse(loaded.onboarding_completed)
             self.assertEqual(loaded.update_mode, "manual")
             self.assertFalse(loaded.start_with_windows)
@@ -149,7 +151,7 @@ class ConfigurationTests(unittest.TestCase):
                 encoding="utf-8",
             )
             loaded = load_config(path)
-            self.assertEqual(loaded.schema_version, 4)
+            self.assertEqual(loaded.schema_version, 5)
             self.assertFalse(loaded.start_with_windows)
             self.assertFalse(loaded.start_minimized)
 
@@ -449,6 +451,115 @@ class ResourceGraphTests(unittest.TestCase):
             ]
             result = run_resource_graph_check(self.definition(), retry_count=0)
             self.assertEqual(result.state, CheckState.UNCONNECTABLE)
+
+
+class ExtensibleSignalTests(unittest.TestCase):
+    def log_definition(self) -> CheckDefinition:
+        return CheckDefinition(
+            "logs-one",
+            "Three errors in one session",
+            "",
+            expected_values=[],
+            kind="azure_log_analytics",
+            query="AppExceptions | summarize count() by SessionId | where count_ >= 3",
+            scope="workspace",
+            workspace_id="11111111-1111-1111-1111-111111111111",
+            lookback_minutes=5,
+        )
+
+    @patch("azure_health_beacon.azure._run_az")
+    def test_log_query_rows_are_confirmed_findings(self, run_az) -> None:
+        run_az.return_value = subprocess.CompletedProcess(
+            [],
+            0,
+            json.dumps(
+                [
+                    {
+                        "SessionId": "session-17",
+                        "UserId": "customer-3",
+                        "count_": 3,
+                    }
+                ]
+            ),
+            "",
+        )
+        result = run_log_analytics_check(self.log_definition(), retry_count=0)
+        self.assertEqual(result.state, CheckState.FAILED)
+        self.assertEqual(result.observed_value, "1")
+        arguments = run_az.call_args.args[0]
+        self.assertIn("--workspace", arguments)
+        self.assertIn("--analytics-query", arguments)
+
+    @patch("azure_health_beacon.azure._run_az")
+    def test_log_query_error_is_unknown_not_healthy(self, run_az) -> None:
+        run_az.return_value = subprocess.CompletedProcess(
+            [], 1, "", "Forbidden: table access denied"
+        )
+        result = run_log_analytics_check(self.log_definition(), retry_count=0)
+        self.assertEqual(result.state, CheckState.UNCONNECTABLE)
+
+    @patch("azure_health_beacon.azure._run_az")
+    def test_metric_threshold_and_no_data_semantics(self, run_az) -> None:
+        definition = CheckDefinition(
+            "metric-one",
+            "Host pool occupancy",
+            RESOURCE_ID,
+            expected_values=[],
+            kind="azure_monitor_metric",
+            metric_name="SessionOccupancyPercent",
+            metric_aggregation="Average",
+            metric_reducer="latest",
+            metric_operator="gte",
+            metric_threshold=100,
+            lookback_minutes=5,
+        )
+        run_az.return_value = subprocess.CompletedProcess(
+            [],
+            0,
+            json.dumps(
+                {
+                    "value": [
+                        {
+                            "timeseries": [
+                                {
+                                    "data": [
+                                        {
+                                            "timeStamp": "2026-08-27T08:00:00Z",
+                                            "average": 99,
+                                        },
+                                        {
+                                            "timeStamp": "2026-08-27T08:01:00Z",
+                                            "average": 100,
+                                        },
+                                    ]
+                                }
+                            ]
+                        }
+                    ]
+                }
+            ),
+            "",
+        )
+        result = run_metric_check(definition, retry_count=0)
+        self.assertEqual(result.state, CheckState.FAILED)
+        run_az.return_value = subprocess.CompletedProcess(
+            [], 0, json.dumps({"value": []}), ""
+        )
+        result = run_metric_check(definition, retry_count=0)
+        self.assertEqual(result.state, CheckState.UNCONNECTABLE)
+
+    def test_log_rule_pack_is_portable_and_imported_disabled(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "signals.ahbrules.json"
+            export_rule_pack(path, [self.log_definition()])
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual(payload["schema_version"], 3)
+            self.assertNotIn("token", path.read_text(encoding="utf-8").casefold())
+            imported = import_rule_pack(path)
+            self.assertFalse(imported[0].enabled)
+            self.assertEqual(
+                imported[0].workspace_id, self.log_definition().workspace_id
+            )
 
 
 class FakeResponse(io.BytesIO):

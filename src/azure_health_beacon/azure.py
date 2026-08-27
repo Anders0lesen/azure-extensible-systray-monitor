@@ -11,6 +11,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from statistics import fmean
 
 from .config import app_data_dir
 from .model import CheckDefinition, CheckFinding, CheckResult, CheckState
@@ -29,6 +30,34 @@ class AzureSubscription:
     id: str
     name: str
     tenant_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class AzureWorkspace:
+    name: str
+    customer_id: str
+    resource_id: str
+    subscription_id: str
+    resource_group: str
+
+
+@dataclass(frozen=True, slots=True)
+class AzureResource:
+    name: str
+    resource_id: str
+    resource_type: str
+    subscription_id: str
+    resource_group: str
+
+
+@dataclass(frozen=True, slots=True)
+class AzureMetricDefinition:
+    name: str
+    display_name: str
+    namespace: str
+    unit: str
+    aggregations: tuple[str, ...]
+    dimensions: tuple[str, ...]
 
 
 def _redact(text: str) -> str:
@@ -199,6 +228,205 @@ def validate_subscription_access(
     )
 
 
+def discover_workspaces(
+    timeout_seconds: int = 45,
+) -> tuple[list[AzureWorkspace], list[str]]:
+    """Return readable Log Analytics workspaces without changing CLI context."""
+    subscriptions, error = list_subscriptions(timeout_seconds)
+    if error:
+        return [], [error]
+    workspaces: list[AzureWorkspace] = []
+    errors: list[str] = []
+    for subscription in subscriptions:
+        try:
+            completed = _run_az(
+                [
+                    "monitor",
+                    "log-analytics",
+                    "workspace",
+                    "list",
+                    "--subscription",
+                    subscription.id,
+                    "--output",
+                    "json",
+                    "--only-show-errors",
+                ],
+                timeout_seconds,
+            )
+        except (FileNotFoundError, OSError, subprocess.TimeoutExpired) as exc:
+            errors.append(_redact(str(exc)))
+            continue
+        if completed.returncode != 0:
+            errors.append(_redact(completed.stderr or "Workspace discovery failed."))
+            continue
+        try:
+            rows = json.loads(completed.stdout)
+            for row in rows:
+                customer_id = str(row.get("customerId", ""))
+                resource_id = str(row.get("id", ""))
+                if customer_id and resource_id:
+                    workspaces.append(
+                        AzureWorkspace(
+                            name=str(row.get("name", "Unnamed workspace")),
+                            customer_id=customer_id,
+                            resource_id=resource_id,
+                            subscription_id=subscription.id,
+                            resource_group=str(row.get("resourceGroup", "")),
+                        )
+                    )
+        except (json.JSONDecodeError, TypeError, AttributeError):
+            errors.append("Azure returned an unreadable workspace list.")
+    workspaces.sort(key=lambda item: (item.name.casefold(), item.subscription_id))
+    return workspaces, errors
+
+
+def discover_workspace_tables(
+    workspace: AzureWorkspace, timeout_seconds: int = 45
+) -> tuple[list[str], str]:
+    """Read the workspace schema. This does not query or retain table rows."""
+    arguments = [
+        "monitor",
+        "log-analytics",
+        "workspace",
+        "get-schema",
+        "--resource-group",
+        workspace.resource_group,
+        "--workspace-name",
+        workspace.name,
+        "--subscription",
+        workspace.subscription_id,
+        "--output",
+        "json",
+        "--only-show-errors",
+    ]
+    try:
+        completed = _run_az(arguments, timeout_seconds)
+    except (FileNotFoundError, OSError, subprocess.TimeoutExpired) as exc:
+        return [], _redact(str(exc))
+    if completed.returncode != 0:
+        return [], _redact(completed.stderr or "Workspace schema discovery failed.")
+    try:
+        payload = json.loads(completed.stdout)
+        raw_tables = payload.get("tables", payload.get("value", []))
+        names = sorted(
+            {
+                str(item.get("name", "")).strip()
+                for item in raw_tables
+                if isinstance(item, dict) and item.get("name")
+            },
+            key=str.casefold,
+        )
+    except (json.JSONDecodeError, TypeError, AttributeError):
+        return [], "Azure returned an unreadable workspace schema."
+    return names, ""
+
+
+def discover_resources(
+    timeout_seconds: int = 45, limit: int = 1000
+) -> tuple[list[AzureResource], list[str]]:
+    """List readable ARM resources across the signed-in subscriptions."""
+    subscriptions, error = list_subscriptions(timeout_seconds)
+    if error:
+        return [], [error]
+    resources: list[AzureResource] = []
+    errors: list[str] = []
+    remaining = limit
+    for subscription in subscriptions:
+        if remaining <= 0:
+            break
+        try:
+            completed = _run_az(
+                [
+                    "resource",
+                    "list",
+                    "--subscription",
+                    subscription.id,
+                    "--query",
+                    f"[:{remaining}].{{name:name,id:id,type:type,resourceGroup:resourceGroup}}",
+                    "--output",
+                    "json",
+                    "--only-show-errors",
+                ],
+                timeout_seconds,
+            )
+        except (FileNotFoundError, OSError, subprocess.TimeoutExpired) as exc:
+            errors.append(_redact(str(exc)))
+            continue
+        if completed.returncode != 0:
+            errors.append(_redact(completed.stderr or "Resource discovery failed."))
+            continue
+        try:
+            rows = json.loads(completed.stdout)
+            for row in rows:
+                resource_id = str(row.get("id", ""))
+                if resource_id:
+                    resources.append(
+                        AzureResource(
+                            name=str(row.get("name", "Unnamed resource")),
+                            resource_id=resource_id,
+                            resource_type=str(row.get("type", "")),
+                            subscription_id=subscription.id,
+                            resource_group=str(row.get("resourceGroup", "")),
+                        )
+                    )
+            remaining = limit - len(resources)
+        except (json.JSONDecodeError, TypeError, AttributeError):
+            errors.append("Azure returned an unreadable resource list.")
+    resources.sort(
+        key=lambda item: (item.resource_type.casefold(), item.name.casefold())
+    )
+    return resources, errors
+
+
+def discover_metric_definitions(
+    resource_id: str, timeout_seconds: int = 45
+) -> tuple[list[AzureMetricDefinition], str]:
+    arguments = [
+        "monitor",
+        "metrics",
+        "list-definitions",
+        "--resource",
+        resource_id,
+        "--output",
+        "json",
+        "--only-show-errors",
+    ]
+    try:
+        completed = _run_az(arguments, timeout_seconds)
+    except (FileNotFoundError, OSError, subprocess.TimeoutExpired) as exc:
+        return [], _redact(str(exc))
+    if completed.returncode != 0:
+        return [], _redact(completed.stderr or "Metric discovery failed.")
+    try:
+        rows = json.loads(completed.stdout)
+        definitions = []
+        for row in rows:
+            name_data = row.get("name", {})
+            name = str(name_data.get("value", ""))
+            if not name:
+                continue
+            definitions.append(
+                AzureMetricDefinition(
+                    name=name,
+                    display_name=str(name_data.get("localizedValue", name)),
+                    namespace=str(row.get("namespace", "")),
+                    unit=str(row.get("unit", "")),
+                    aggregations=tuple(
+                        str(value) for value in row.get("supportedAggregationTypes", [])
+                    ),
+                    dimensions=tuple(
+                        str(value.get("value", ""))
+                        for value in row.get("dimensions", [])
+                        if isinstance(value, dict) and value.get("value")
+                    ),
+                )
+            )
+    except (json.JSONDecodeError, TypeError, AttributeError):
+        return [], "Azure returned unreadable metric definitions."
+    definitions.sort(key=lambda item: item.display_name.casefold())
+    return definitions, ""
+
+
 def _portal_url(definition: CheckDefinition) -> str:
     if definition.portal_url:
         return definition.portal_url
@@ -356,7 +584,9 @@ def _finding_from_row(row: dict[str, object]) -> CheckFinding:
     portal_url = ""
     if resource_id.casefold().startswith("/subscriptions/"):
         portal_url = f"https://portal.azure.com/#/resource{resource_id}/overview"
-    return CheckFinding(title=title[:200], summary=" • ".join(details)[:500], portal_url=portal_url)
+    return CheckFinding(
+        title=title[:200], summary=" • ".join(details)[:500], portal_url=portal_url
+    )
 
 
 def _graph_rows(payload: object) -> list[dict[str, object]]:
@@ -369,8 +599,14 @@ def _graph_rows(payload: object) -> list[dict[str, object]]:
         columns = data.get("columns", [])
         rows = data.get("rows", [])
         if isinstance(columns, list) and isinstance(rows, list):
-            names = [str(item.get("name", "")) for item in columns if isinstance(item, dict)]
-            return [dict(zip(names, row, strict=False)) for row in rows if isinstance(row, list)]
+            names = [
+                str(item.get("name", "")) for item in columns if isinstance(item, dict)
+            ]
+            return [
+                dict(zip(names, row, strict=False))
+                for row in rows
+                if isinstance(row, list)
+            ]
     raise ValueError("Resource Graph returned an unreadable result table")
 
 
@@ -401,7 +637,10 @@ def run_resource_graph_check(
             request = {
                 "subscriptions": [item.id for item in batch],
                 "query": definition.query,
-                "options": {"resultFormat": "objectArray", "$top": MAX_FINDINGS_TO_DISPLAY},
+                "options": {
+                    "resultFormat": "objectArray",
+                    "$top": MAX_FINDINGS_TO_DISPLAY,
+                },
             }
             app_data_dir().mkdir(parents=True, exist_ok=True)
             handle, request_name = tempfile.mkstemp(
@@ -440,7 +679,11 @@ def run_resource_graph_check(
                                 payload = json.loads(completed.stdout)
                                 rows = _graph_rows(payload)
                                 reported = int(payload.get("totalRecords", len(rows)))
-                            except (json.JSONDecodeError, TypeError, ValueError) as error:
+                            except (
+                                json.JSONDecodeError,
+                                TypeError,
+                                ValueError,
+                            ) as error:
                                 last_error = _redact(str(error))
                             else:
                                 total_records += max(reported, len(rows))
@@ -497,11 +740,246 @@ def run_resource_graph_check(
     )
 
 
+def _log_rows(payload: object) -> list[dict[str, object]]:
+    if isinstance(payload, list):
+        return [row for row in payload if isinstance(row, dict)]
+    if isinstance(payload, dict):
+        if isinstance(payload.get("value"), list):
+            return [row for row in payload["value"] if isinstance(row, dict)]
+        tables = payload.get("tables")
+        if isinstance(tables, list) and tables:
+            first = tables[0]
+            if isinstance(first, dict):
+                columns = first.get("columns", [])
+                rows = first.get("rows", [])
+                names = [
+                    str(column.get("name", ""))
+                    for column in columns
+                    if isinstance(column, dict)
+                ]
+                return [
+                    dict(zip(names, row, strict=False))
+                    for row in rows
+                    if isinstance(row, list)
+                ]
+    raise ValueError("Log Analytics returned an unreadable result table")
+
+
+def run_log_analytics_check(
+    definition: CheckDefinition, *, timeout_seconds: int = 30, retry_count: int = 2
+) -> CheckResult:
+    arguments = [
+        "monitor",
+        "log-analytics",
+        "query",
+        "--workspace",
+        definition.workspace_id,
+        "--analytics-query",
+        definition.query,
+        "--timespan",
+        f"PT{definition.lookback_minutes}M",
+        "--output",
+        "json",
+        "--only-show-errors",
+    ]
+    last_error = "Log Analytics did not return a result."
+    for attempt in range(retry_count + 1):
+        try:
+            completed = _run_az(arguments, timeout_seconds)
+        except subprocess.TimeoutExpired:
+            last_error = f"Log query timed out after {timeout_seconds} seconds."
+        except (FileNotFoundError, OSError) as exc:
+            last_error = _redact(str(exc))
+        else:
+            if completed.returncode == 0:
+                try:
+                    rows = _log_rows(json.loads(completed.stdout))
+                except (json.JSONDecodeError, TypeError, ValueError) as exc:
+                    last_error = _redact(str(exc))
+                else:
+                    findings = [
+                        _finding_from_row(row) for row in rows[:MAX_FINDINGS_TO_DISPLAY]
+                    ]
+                    if rows:
+                        return CheckResult(
+                            definition.id,
+                            definition.name,
+                            CheckState.FAILED,
+                            f"Found {len(rows)} matching log row(s) in the last {definition.lookback_minutes} minute(s).",
+                            observed_value=str(len(rows)),
+                            portal_url=definition.portal_url,
+                            findings=findings,
+                        )
+                    return CheckResult(
+                        definition.id,
+                        definition.name,
+                        CheckState.HEALTHY,
+                        f"No matching log rows in the last {definition.lookback_minutes} minute(s).",
+                        observed_value="0",
+                        portal_url=definition.portal_url,
+                    )
+            else:
+                last_error = _redact(
+                    completed.stderr or completed.stdout or "Log query failed."
+                )
+        if attempt < retry_count:
+            time.sleep(min(2**attempt, 4))
+    return CheckResult(
+        definition.id,
+        definition.name,
+        CheckState.UNCONNECTABLE,
+        last_error,
+        portal_url=definition.portal_url,
+    )
+
+
+def _metric_values(payload: object, aggregation: str) -> list[tuple[str, float]]:
+    if not isinstance(payload, dict):
+        raise TypeError("Azure Monitor returned an unreadable metric response")
+    values: list[tuple[str, float]] = []
+    key = aggregation.casefold()
+    for metric in payload.get("value", []):
+        if not isinstance(metric, dict):
+            continue
+        for series in metric.get("timeseries", []):
+            if not isinstance(series, dict):
+                continue
+            for point in series.get("data", []):
+                if not isinstance(point, dict) or point.get(key) is None:
+                    continue
+                values.append((str(point.get("timeStamp", "")), float(point[key])))
+    return values
+
+
+def _reduce_metric(values: list[tuple[str, float]], reducer: str) -> float:
+    numbers = [value for _, value in values]
+    if reducer == "latest":
+        return max(values, key=lambda item: item[0])[1]
+    if reducer == "maximum":
+        return max(numbers)
+    if reducer == "minimum":
+        return min(numbers)
+    if reducer == "average":
+        return fmean(numbers)
+    return sum(numbers)
+
+
+def _compare_metric(value: float, operator: str, threshold: float) -> bool:
+    comparisons = {
+        "gt": value > threshold,
+        "gte": value >= threshold,
+        "lt": value < threshold,
+        "lte": value <= threshold,
+        "eq": value == threshold,
+        "ne": value != threshold,
+    }
+    return comparisons[operator]
+
+
+def run_metric_check(
+    definition: CheckDefinition, *, timeout_seconds: int = 30, retry_count: int = 2
+) -> CheckResult:
+    arguments = [
+        "monitor",
+        "metrics",
+        "list",
+        "--resource",
+        definition.resource_id,
+        "--metrics",
+        definition.metric_name,
+        "--aggregation",
+        definition.metric_aggregation,
+        "--offset",
+        f"{definition.lookback_minutes}m",
+        "--interval",
+        "1m",
+        "--output",
+        "json",
+        "--only-show-errors",
+    ]
+    if definition.metric_namespace:
+        arguments.extend(["--namespace", definition.metric_namespace])
+    if definition.metric_filter:
+        arguments.extend(["--filter", definition.metric_filter])
+    last_error = "Azure Monitor did not return metric data."
+    for attempt in range(retry_count + 1):
+        try:
+            completed = _run_az(arguments, timeout_seconds)
+        except subprocess.TimeoutExpired:
+            last_error = f"Metric query timed out after {timeout_seconds} seconds."
+        except (FileNotFoundError, OSError) as exc:
+            last_error = _redact(str(exc))
+        else:
+            if completed.returncode == 0:
+                try:
+                    values = _metric_values(
+                        json.loads(completed.stdout), definition.metric_aggregation
+                    )
+                except (json.JSONDecodeError, TypeError, ValueError) as exc:
+                    last_error = _redact(str(exc))
+                else:
+                    if not values:
+                        return CheckResult(
+                            definition.id,
+                            definition.name,
+                            CheckState.UNCONNECTABLE,
+                            "Azure returned no metric samples; health cannot be proven.",
+                            portal_url=_portal_url(definition),
+                        )
+                    observed = _reduce_metric(values, definition.metric_reducer)
+                    tripped = _compare_metric(
+                        observed,
+                        definition.metric_operator,
+                        definition.metric_threshold,
+                    )
+                    symbol = {
+                        "gt": ">",
+                        "gte": "≥",
+                        "lt": "<",
+                        "lte": "≤",
+                        "eq": "=",
+                        "ne": "≠",
+                    }[definition.metric_operator]
+                    summary = (
+                        f"{definition.metric_name} is {observed:g}; "
+                        f"alert condition is {symbol} {definition.metric_threshold:g}."
+                    )
+                    return CheckResult(
+                        definition.id,
+                        definition.name,
+                        CheckState.FAILED if tripped else CheckState.HEALTHY,
+                        summary,
+                        observed_value=f"{observed:g}",
+                        portal_url=_portal_url(definition),
+                    )
+            else:
+                last_error = _redact(
+                    completed.stderr or completed.stdout or "Metric query failed."
+                )
+        if attempt < retry_count:
+            time.sleep(min(2**attempt, 4))
+    return CheckResult(
+        definition.id,
+        definition.name,
+        CheckState.UNCONNECTABLE,
+        last_error,
+        portal_url=_portal_url(definition),
+    )
+
+
 def run_check(
     definition: CheckDefinition, *, timeout_seconds: int = 30, retry_count: int = 2
 ) -> CheckResult:
     if definition.kind == "azure_resource_graph":
         return run_resource_graph_check(
+            definition, timeout_seconds=timeout_seconds, retry_count=retry_count
+        )
+    if definition.kind == "azure_log_analytics":
+        return run_log_analytics_check(
+            definition, timeout_seconds=timeout_seconds, retry_count=retry_count
+        )
+    if definition.kind == "azure_monitor_metric":
+        return run_metric_check(
             definition, timeout_seconds=timeout_seconds, retry_count=retry_count
         )
     return run_provisioning_check(

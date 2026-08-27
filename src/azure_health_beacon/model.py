@@ -31,6 +31,15 @@ class CheckDefinition:
     kind: str = "azure_resource_provisioning"
     query: str = ""
     scope: str = "resource"
+    workspace_id: str = ""
+    lookback_minutes: int = 5
+    metric_name: str = ""
+    metric_namespace: str = ""
+    metric_aggregation: str = "Average"
+    metric_reducer: str = "latest"
+    metric_operator: str = "gt"
+    metric_threshold: float = 0.0
+    metric_filter: str = ""
 
     @property
     def subscription_id(self) -> str:

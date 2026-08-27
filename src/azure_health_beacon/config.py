@@ -14,9 +14,9 @@ from urllib.parse import unquote, urlparse
 from .model import CheckDefinition
 
 APP_NAME = "AzureHealthBeacon"
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 RULE_PACK_FORMAT = "azure-health-beacon-rule-pack"
-RULE_PACK_SCHEMA_VERSION = 2
+RULE_PACK_SCHEMA_VERSION = 3
 MAX_RULE_PACK_BYTES = 1_000_000
 MAX_RULES_PER_PACK = 500
 AUTHORIZATION_MAX_AGE = timedelta(days=14)
@@ -32,6 +32,15 @@ CHECK_KEYS = {
     "kind",
     "query",
     "scope",
+    "workspace_id",
+    "lookback_minutes",
+    "metric_name",
+    "metric_namespace",
+    "metric_aggregation",
+    "metric_reducer",
+    "metric_operator",
+    "metric_threshold",
+    "metric_filter",
 }
 
 
@@ -51,6 +60,7 @@ class AppConfig:
     last_update_check_utc: str = ""
     start_with_windows: bool = False
     start_minimized: bool = False
+    theme_mode: str = "dark"
     checks: list[CheckDefinition] = field(default_factory=list)
 
 
@@ -124,6 +134,15 @@ def _definition_from_dict(raw: dict[str, Any]) -> CheckDefinition:
         kind=str(raw.get("kind", "azure_resource_provisioning")),
         query=str(raw.get("query", "")),
         scope=str(raw.get("scope", "resource")),
+        workspace_id=str(raw.get("workspace_id", "")).strip(),
+        lookback_minutes=int(raw.get("lookback_minutes", 5)),
+        metric_name=str(raw.get("metric_name", "")).strip(),
+        metric_namespace=str(raw.get("metric_namespace", "")).strip(),
+        metric_aggregation=str(raw.get("metric_aggregation", "Average")).strip(),
+        metric_reducer=str(raw.get("metric_reducer", "latest")).strip(),
+        metric_operator=str(raw.get("metric_operator", "gt")).strip(),
+        metric_threshold=float(raw.get("metric_threshold", 0)),
+        metric_filter=str(raw.get("metric_filter", "")).strip(),
     )
     validate_definition(definition)
     return definition
@@ -136,7 +155,7 @@ def load_config(path: Path | None = None) -> AppConfig:
     raw = json.loads(target.read_text(encoding="utf-8"))
     _reject_sensitive_keys(raw)
     loaded_schema = int(raw.get("schema_version", 0))
-    if loaded_schema not in (1, 2, 3, SCHEMA_VERSION):
+    if loaded_schema not in (1, 2, 3, 4, SCHEMA_VERSION):
         raise ValueError(
             f"Unsupported configuration schema: {raw.get('schema_version')}"
         )
@@ -152,6 +171,9 @@ def load_config(path: Path | None = None) -> AppConfig:
         raise ValueError("retry_count must be between 0 and 5")
     if update_mode not in {"manual", "notify", "automatic"}:
         raise ValueError("update_mode must be manual, notify, or automatic")
+    theme_mode = str(raw.get("theme_mode", "dark")).strip().casefold()
+    if theme_mode not in {"dark", "light"}:
+        theme_mode = "dark"
     checks = [_definition_from_dict(item) for item in raw.get("checks", [])]
     return AppConfig(
         schema_version=SCHEMA_VERSION,
@@ -172,6 +194,7 @@ def load_config(path: Path | None = None) -> AppConfig:
         last_update_check_utc=str(raw.get("last_update_check_utc", "")).strip(),
         start_with_windows=bool(raw.get("start_with_windows", False)),
         start_minimized=bool(raw.get("start_minimized", False)),
+        theme_mode=theme_mode,
         checks=checks,
     )
 
@@ -194,6 +217,7 @@ def save_config(config: AppConfig, path: Path | None = None) -> Path:
         "last_update_check_utc": config.last_update_check_utc,
         "start_with_windows": config.start_with_windows,
         "start_minimized": config.start_minimized,
+        "theme_mode": config.theme_mode,
         "checks": [asdict(check) for check in config.checks],
     }
     _reject_sensitive_keys(payload)
@@ -255,27 +279,79 @@ def clear_connection_metadata(config: AppConfig) -> None:
 
 
 def validate_definition(definition: CheckDefinition) -> None:
-    supported = {"azure_resource_provisioning", "azure_resource_graph"}
+    supported = {
+        "azure_resource_provisioning",
+        "azure_resource_graph",
+        "azure_log_analytics",
+        "azure_monitor_metric",
+    }
     if definition.kind not in supported:
         raise ValueError(f"Unsupported check kind: {definition.kind}")
     if not definition.id or not definition.name:
         raise ValueError("Check ID and name are required")
     if len(definition.name) > 200:
         raise ValueError("Check name is unexpectedly long")
-    if definition.kind == "azure_resource_graph":
-        if definition.scope != "all_accessible":
-            raise ValueError("Resource Graph checks must use all accessible subscriptions")
+    if definition.kind in {"azure_resource_graph", "azure_log_analytics"}:
+        if (
+            definition.kind == "azure_resource_graph"
+            and definition.scope != "all_accessible"
+        ):
+            raise ValueError(
+                "Resource Graph checks must use all accessible subscriptions"
+            )
+        if definition.kind == "azure_log_analytics" and definition.scope != "workspace":
+            raise ValueError("Log Analytics checks must target one workspace")
+        if definition.kind == "azure_log_analytics" and not re.fullmatch(
+            r"[0-9a-fA-F-]{36}", definition.workspace_id
+        ):
+            raise ValueError("Select a valid Log Analytics workspace")
         if not definition.query.strip():
-            raise ValueError("Enter a Resource Graph KQL query")
+            raise ValueError("Enter a KQL query")
         if len(definition.query) > 20_000:
-            raise ValueError("Resource Graph query exceeds the 20,000-character limit")
+            raise ValueError("KQL query exceeds the 20,000-character limit")
         if any(
             ord(character) < 32 and character not in "\r\n\t"
             for character in definition.query
         ):
-            raise ValueError("Resource Graph queries cannot contain control characters")
-        if definition.resource_id or definition.tenant_id or definition.expected_values:
-            raise ValueError("Resource Graph checks cannot contain resource-only fields")
+            raise ValueError("KQL queries cannot contain control characters")
+        if definition.kind == "azure_resource_graph" and (
+            definition.resource_id or definition.tenant_id or definition.expected_values
+        ):
+            raise ValueError(
+                "Resource Graph checks cannot contain resource-only fields"
+            )
+        if not 1 <= definition.lookback_minutes <= 10080:
+            raise ValueError("Lookback must be between 1 minute and 7 days")
+        _validate_portal_url(definition.portal_url)
+        _reject_secret_like_text(asdict(definition), "check")
+        return
+    if definition.kind == "azure_monitor_metric":
+        if not is_valid_resource_id(definition.resource_id):
+            raise ValueError("Select a complete Azure resource ID")
+        if not definition.metric_name:
+            raise ValueError("Select or enter a metric name")
+        if definition.metric_aggregation not in {
+            "Average",
+            "Count",
+            "Maximum",
+            "Minimum",
+            "Total",
+        }:
+            raise ValueError("Unsupported Azure metric aggregation")
+        if definition.metric_reducer not in {
+            "latest",
+            "maximum",
+            "minimum",
+            "average",
+            "total",
+        }:
+            raise ValueError("Unsupported metric reducer")
+        if definition.metric_operator not in {"gt", "gte", "lt", "lte", "eq", "ne"}:
+            raise ValueError("Unsupported metric comparison")
+        if not 1 <= definition.lookback_minutes <= 10080:
+            raise ValueError("Lookback must be between 1 minute and 7 days")
+        if len(definition.metric_filter) > 2000:
+            raise ValueError("Metric dimension filter is unexpectedly long")
         _validate_portal_url(definition.portal_url)
         _reject_secret_like_text(asdict(definition), "check")
         return
@@ -417,7 +493,7 @@ def import_rule_pack(path: Path) -> list[CheckDefinition]:
     _reject_secret_like_text(raw, "rule_pack")
     if raw.get("format") != RULE_PACK_FORMAT:
         raise ValueError("This is not an Azure Health Beacon rule pack")
-    if int(raw.get("schema_version", 0)) not in (1, RULE_PACK_SCHEMA_VERSION):
+    if int(raw.get("schema_version", 0)) not in (1, 2, RULE_PACK_SCHEMA_VERSION):
         raise ValueError("Unsupported rule-pack schema")
     items = raw.get("checks")
     if not isinstance(items, list) or not items:
