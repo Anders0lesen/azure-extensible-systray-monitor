@@ -16,6 +16,7 @@ from azure_health_beacon.azure import (
     delete_isolated_azure_state,
     interactive_login,
     list_subscriptions,
+    run_resource_graph_check,
     validate_subscription_access,
 )
 from azure_health_beacon.config import (
@@ -39,8 +40,10 @@ from azure_health_beacon.model import (
 from azure_health_beacon.updater import (
     download_verified_installer,
     is_newer_version,
+    launch_installer,
     parse_release_payload,
 )
+from azure_health_beacon.windows_startup import startup_command
 
 RESOURCE_ID = (
     "/subscriptions/11111111-1111-1111-1111-111111111111/"
@@ -123,9 +126,32 @@ class ConfigurationTests(unittest.TestCase):
                 encoding="utf-8",
             )
             loaded = load_config(path)
-            self.assertEqual(loaded.schema_version, 3)
+            self.assertEqual(loaded.schema_version, 4)
             self.assertFalse(loaded.onboarding_completed)
             self.assertEqual(loaded.update_mode, "manual")
+            self.assertFalse(loaded.start_with_windows)
+            self.assertFalse(loaded.start_minimized)
+
+    def test_version_three_config_adds_opt_in_settings(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "checks.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 3,
+                        "onboarding_completed": False,
+                        "interval_minutes": 5,
+                        "timeout_seconds": 30,
+                        "retry_count": 2,
+                        "checks": [],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            loaded = load_config(path)
+            self.assertEqual(loaded.schema_version, 4)
+            self.assertFalse(loaded.start_with_windows)
+            self.assertFalse(loaded.start_minimized)
 
     def test_connection_hard_expires_at_fourteen_days(self) -> None:
         started = datetime(2026, 8, 1, tzinfo=UTC)
@@ -194,6 +220,38 @@ class ConfigurationTests(unittest.TestCase):
             )
             with self.assertRaisesRegex(ValueError, "Unsupported fields"):
                 import_rule_pack(path)
+
+    def test_graph_query_exports_without_credentials_and_imports_disabled(self) -> None:
+        definition = CheckDefinition(
+            "graph-one",
+            "Fired alerts",
+            "",
+            expected_values=[],
+            kind="azure_resource_graph",
+            query="Resources | where name == 'orion' | project name, id",
+            scope="all_accessible",
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "graph.ahbrules.json"
+            export_rule_pack(path, [definition])
+            imported = import_rule_pack(path)
+            self.assertEqual(imported[0].query, definition.query)
+            self.assertFalse(imported[0].enabled)
+            self.assertNotIn("token", path.read_text(encoding="utf-8").casefold())
+
+    def test_graph_query_rejects_secret_like_text(self) -> None:
+        definition = CheckDefinition(
+            "graph-one",
+            "Bad query",
+            "",
+            expected_values=[],
+            kind="azure_resource_graph",
+            query="Resources | where note == 'client_secret=do-not-store-this'",
+            scope="all_accessible",
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaisesRegex(ValueError, "Possible secret"):
+                export_rule_pack(Path(directory) / "bad.json", [definition])
 
 
 class AzureAuthenticationTests(unittest.TestCase):
@@ -279,6 +337,118 @@ class AzureAuthenticationTests(unittest.TestCase):
         arguments = run_az.call_args.args[0]
         self.assertEqual(arguments[:2], ["group", "list"])
         self.assertIn(subscription.id, arguments)
+
+
+class ResourceGraphTests(unittest.TestCase):
+    def definition(self) -> CheckDefinition:
+        return CheckDefinition(
+            "graph-one",
+            "Fired alerts",
+            "",
+            expected_values=[],
+            kind="azure_resource_graph",
+            query="Resources | project name, id",
+            scope="all_accessible",
+        )
+
+    @patch("azure_health_beacon.azure.app_data_dir")
+    @patch("azure_health_beacon.azure._run_az")
+    def test_matching_rows_are_confirmed_failures_across_all_subscriptions(
+        self, run_az, data_dir
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            data_dir.return_value = Path(directory)
+            subscriptions = [
+                {
+                    "id": "11111111-1111-1111-1111-111111111111",
+                    "name": "Orion",
+                    "tenantId": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                },
+                {
+                    "id": "22222222-2222-2222-2222-222222222222",
+                    "name": "Shared",
+                    "tenantId": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                },
+            ]
+            run_az.side_effect = [
+                subprocess.CompletedProcess([], 0, json.dumps(subscriptions), ""),
+                subprocess.CompletedProcess(
+                    [],
+                    0,
+                    json.dumps(
+                        {
+                            "totalRecords": 1,
+                            "data": [
+                                {
+                                    "name": "orion-fw",
+                                    "id": RESOURCE_ID,
+                                    "state": "Failed",
+                                }
+                            ],
+                        }
+                    ),
+                    "",
+                ),
+            ]
+            result = run_resource_graph_check(self.definition(), retry_count=0)
+            self.assertEqual(result.state, CheckState.FAILED)
+            self.assertIn("2 accessible subscriptions", result.summary)
+            self.assertEqual(result.findings[0].title, "orion-fw")
+            rest_arguments = run_az.call_args_list[1].args[0]
+            self.assertEqual(rest_arguments[0], "rest")
+            self.assertIn("--subscription", rest_arguments)
+
+    @patch("azure_health_beacon.azure.app_data_dir")
+    @patch("azure_health_beacon.azure._run_az")
+    def test_zero_rows_is_healthy(self, run_az, data_dir) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            data_dir.return_value = Path(directory)
+            run_az.side_effect = [
+                subprocess.CompletedProcess(
+                    [],
+                    0,
+                    json.dumps(
+                        [
+                            {
+                                "id": "11111111-1111-1111-1111-111111111111",
+                                "name": "Orion",
+                                "tenantId": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                            }
+                        ]
+                    ),
+                    "",
+                ),
+                subprocess.CompletedProcess(
+                    [], 0, json.dumps({"totalRecords": 0, "data": []}), ""
+                ),
+            ]
+            result = run_resource_graph_check(self.definition(), retry_count=0)
+            self.assertEqual(result.state, CheckState.HEALTHY)
+
+    @patch("azure_health_beacon.azure.app_data_dir")
+    @patch("azure_health_beacon.azure._run_az")
+    def test_query_error_is_grey_not_red(self, run_az, data_dir) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            data_dir.return_value = Path(directory)
+            run_az.side_effect = [
+                subprocess.CompletedProcess(
+                    [],
+                    0,
+                    json.dumps(
+                        [
+                            {
+                                "id": "11111111-1111-1111-1111-111111111111",
+                                "name": "Orion",
+                                "tenantId": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                            }
+                        ]
+                    ),
+                    "",
+                ),
+                subprocess.CompletedProcess([], 1, "", "BadRequest: invalid query"),
+            ]
+            result = run_resource_graph_check(self.definition(), retry_count=0)
+            self.assertEqual(result.state, CheckState.UNCONNECTABLE)
 
 
 class FakeResponse(io.BytesIO):
@@ -381,6 +551,21 @@ class UpdateTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "failed SHA-256 verification"):
                 download_verified_installer(release, Path(directory))
             self.assertEqual(list(Path(directory).iterdir()), [])
+
+    @patch("azure_health_beacon.updater.subprocess.Popen")
+    def test_approved_manual_update_is_silent_and_restarts(self, popen) -> None:
+        installer = Path(r"C:\Temp\AzureHealthBeacon-Setup-v0.4.0.exe")
+        launch_installer(installer, automatic=False)
+        arguments = popen.call_args.args[0]
+        self.assertIn("/VERYSILENT", arguments)
+        self.assertIn("/RESTARTAPPLICATIONS", arguments)
+
+
+class WindowsStartupTests(unittest.TestCase):
+    def test_startup_command_quotes_executable_and_marks_startup_launch(self) -> None:
+        command = startup_command(r"C:\Program Files\Azure Health Beacon\Beacon.exe")
+        self.assertIn('"C:\\Program Files\\Azure Health Beacon\\Beacon.exe"', command)
+        self.assertTrue(command.endswith("--startup"))
 
 
 if __name__ == "__main__":

@@ -19,6 +19,7 @@ from tkinter import (
     RIGHT,
     BooleanVar,
     StringVar,
+    Text,
     Tk,
     Toplevel,
     X,
@@ -36,7 +37,7 @@ from .azure import (
     delete_isolated_azure_state,
     interactive_login,
     list_subscriptions,
-    run_provisioning_check,
+    run_check,
     validate_subscription_access,
 )
 from .branding import apply_window_branding
@@ -52,7 +53,9 @@ from .config import (
     mark_connection_established,
     parse_resource_reference,
     save_config,
+    validate_definition,
 )
+from .graph_queries import CUSTOM_TEMPLATE, GRAPH_TEMPLATES
 from .icons import icon_for
 from .model import (
     BeaconState,
@@ -68,6 +71,7 @@ from .updater import (
     is_newer_version,
     launch_installer,
 )
+from .windows_startup import set_startup_enabled
 
 LOGGER = logging.getLogger(__name__)
 UPDATE_CHECK_INTERVAL = timedelta(hours=24)
@@ -93,7 +97,8 @@ def _acquire_single_instance() -> object | None:
 
 
 class BeaconApp:
-    def __init__(self) -> None:
+    def __init__(self, *, startup_launch: bool = False) -> None:
+        self.startup_launch = startup_launch
         self.root = Tk()
         apply_window_branding(self.root)
         self.root.withdraw()
@@ -123,7 +128,8 @@ class BeaconApp:
         self.previous_stable_state: BeaconState | None = None
         self.status_window: Toplevel | None = None
         self.setup_window: SetupWizard | None = None
-        self.update_settings_window: Toplevel | None = None
+        self.settings_window: Toplevel | None = None
+        self.update_status_text = StringVar(value="Updates have not been checked yet.")
         self.available_update: ReleaseInfo | None = None
         self.update_in_progress = False
         self.status_body: ttk.Frame | None = None
@@ -151,7 +157,7 @@ class BeaconApp:
                     enabled=lambda _item: self.config.onboarding_completed,
                 ),
                 pystray.MenuItem("Check for updates…", self._menu_check_updates),
-                pystray.MenuItem("Update settings…", self._menu_update_settings),
+                pystray.MenuItem("Settings…", self._menu_update_settings),
                 pystray.Menu.SEPARATOR,
                 pystray.MenuItem(
                     "Delete Azure connection…",
@@ -182,6 +188,8 @@ class BeaconApp:
             self._set_state(BeaconState.UNCONNECTABLE)
             self.icon.title = "Azure Health Beacon — Setup required"
             self.root.after(250, self.show_setup)
+        elif not self.config.start_minimized:
+            self.root.after(250, self.show_status)
         self.root.after(100, self._process_ui_events)
         self.root.after(125, self._animate)
         self.root.after(3000, self._scheduled_update_check)
@@ -216,7 +224,7 @@ class BeaconApp:
         with ThreadPoolExecutor(max_workers=min(4, len(enabled))) as executor:
             futures = {
                 executor.submit(
-                    run_provisioning_check,
+                    run_check,
                     definition,
                     timeout_seconds=self.config.timeout_seconds,
                     retry_count=self.config.retry_count,
@@ -272,9 +280,10 @@ class BeaconApp:
                 elif event == "connection_expired":
                     self.expire_connection()
                 elif event == "check_updates":
+                    self.show_settings()
                     self.check_for_updates(interactive=True)
                 elif event == "update_settings":
-                    self.show_update_settings()
+                    self.show_settings()
                 elif event == "update_checked":
                     release, interactive = payload  # type: ignore[misc]
                     self._handle_update_checked(release, interactive)
@@ -389,7 +398,7 @@ class BeaconApp:
         ttk.Button(footer, text="Manage checks", command=self.show_manager).pack(
             side=LEFT
         )
-        ttk.Button(footer, text="Updates", command=self.show_update_settings).pack(
+        ttk.Button(footer, text="Settings", command=self.show_settings).pack(
             side=LEFT, padx=(8, 0)
         )
         ttk.Button(footer, text="Check now", command=self.check_now_event.set).pack(
@@ -450,6 +459,13 @@ class BeaconApp:
             ttk.Label(card, text=result.summary, wraplength=470).pack(
                 anchor="w", pady=(3, 0)
             )
+            for finding in result.findings[:5]:
+                detail = f"• {finding.title}"
+                if finding.summary:
+                    detail += f" — {finding.summary}"
+                ttk.Label(card, text=detail, wraplength=470).pack(
+                    anchor="w", pady=(2, 0)
+                )
             timing = f"Last checked: {result.checked_at.strftime('%d %b %Y, %H:%M:%S')}"
             if result.first_detected_at:
                 timing += f"  •  First detected: {result.first_detected_at.strftime('%H:%M:%S')}"
@@ -617,13 +633,11 @@ class BeaconApp:
         self.config.last_update_check_utc = datetime.now(UTC).isoformat()
         save_config(self.config)
         if not is_newer_version(release.version):
-            if interactive:
-                messagebox.showinfo(
-                    "Azure Health Beacon",
-                    f"You already have the latest version ({__version__}).",
-                    parent=self.root,
-                )
+            self.update_status_text.set(
+                "✅ Fully up to date — no new updates available"
+            )
             return
+        self.update_status_text.set(f"Version {release.version} is available.")
         self.available_update = release
         self.icon.update_menu()
         if self.config.update_mode == "automatic" and not interactive:
@@ -646,6 +660,7 @@ class BeaconApp:
 
     def _handle_update_error(self, error: str, interactive: bool) -> None:
         self.update_in_progress = False
+        self.update_status_text.set("Could not check for updates.")
         if interactive:
             messagebox.showerror(
                 "Could not check for updates",
@@ -685,24 +700,52 @@ class BeaconApp:
         self.shutdown()
 
     def show_update_settings(self) -> None:
-        if self.update_settings_window and self.update_settings_window.winfo_exists():
-            self.update_settings_window.deiconify()
-            self.update_settings_window.lift()
-            self.update_settings_window.focus_force()
+        self.show_settings()
+
+    def show_settings(self) -> None:
+        if self.settings_window and self.settings_window.winfo_exists():
+            self.settings_window.deiconify()
+            self.settings_window.lift()
+            self.settings_window.focus_force()
             return
         window = Toplevel(self.root)
         apply_window_branding(window)
-        self.update_settings_window = window
-        window.title("Azure Health Beacon updates")
-        window.geometry("570x390")
+        self.settings_window = window
+        window.title("Azure Health Beacon settings")
+        window.geometry("610x570")
         window.resizable(False, False)
         window.protocol("WM_DELETE_WINDOW", window.destroy)
         body = ttk.Frame(window, padding=24)
         body.pack(fill=BOTH, expand=True)
         ttk.Label(
             body,
-            text=f"Updates — current version {__version__}",
+            text="Settings",
             font=("Segoe UI", 15, "bold"),
+        ).pack(anchor="w")
+        ttk.Label(body, text="Windows", font=("Segoe UI", 11, "bold")).pack(
+            anchor="w", pady=(18, 4)
+        )
+        start_with_windows = BooleanVar(value=self.config.start_with_windows)
+        start_minimized = BooleanVar(value=self.config.start_minimized)
+        ttk.Checkbutton(
+            body,
+            text="Start Azure Health Beacon when I sign in to Windows",
+            variable=start_with_windows,
+        ).pack(anchor="w")
+        ttk.Checkbutton(
+            body,
+            text="Start minimized in the notification area",
+            variable=start_minimized,
+        ).pack(anchor="w", pady=(4, 0))
+        ttk.Label(
+            body,
+            text="Both options are off until you explicitly enable them.",
+        ).pack(anchor="w", padx=(24, 0), pady=(2, 10))
+        ttk.Separator(body).pack(fill=X, pady=(4, 8))
+        ttk.Label(
+            body,
+            text=f"Updates — current version {__version__}",
+            font=("Segoe UI", 11, "bold"),
         ).pack(anchor="w")
         ttk.Label(
             body,
@@ -751,6 +794,17 @@ class BeaconApp:
                 if not confirmed:
                     return
             self.config.update_mode = choice
+            try:
+                set_startup_enabled(start_with_windows.get())
+            except OSError as error:
+                messagebox.showerror(
+                    "Could not change Windows startup",
+                    str(error),
+                    parent=window,
+                )
+                return
+            self.config.start_with_windows = start_with_windows.get()
+            self.config.start_minimized = start_minimized.get()
             save_config(self.config)
             window.destroy()
             if choice != "manual":
@@ -760,9 +814,15 @@ class BeaconApp:
 
         ttk.Button(
             buttons,
-            text="Check now",
-            command=lambda: self.check_for_updates(interactive=True),
+            text="Check for updates",
+            command=lambda: (
+                self.update_status_text.set("Checking GitHub releases…"),
+                self.check_for_updates(interactive=True),
+            ),
         ).pack(side=LEFT)
+        ttk.Label(
+            body, textvariable=self.update_status_text, wraplength=530
+        ).pack(anchor="w", side="bottom", pady=(8, 0))
         ttk.Button(buttons, text="Save", command=save).pack(side=RIGHT)
         ttk.Button(buttons, text="Cancel", command=window.destroy).pack(
             side=RIGHT, padx=(0, 8)
@@ -975,22 +1035,23 @@ class CheckManager:
         self.window = Toplevel(app.root)
         apply_window_branding(self.window)
         self.window.title("Manage Azure checks")
-        self.window.geometry("760x470")
-        self.window.minsize(680, 420)
+        self.window.geometry("940x700")
+        self.window.minsize(860, 620)
         self.working = load_config()
         self.selected_id: str | None = None
         self.draft_id = str(uuid.uuid4())
+        self.kind = StringVar(value="Provisioning state")
         self.name = StringVar()
         self.reference = StringVar()
         self.tenant = StringVar()
         self.expected = StringVar(value="Succeeded")
+        self.template = StringVar(value="Active Azure Monitor alerts")
         self.enabled = BooleanVar(value=True)
         self.last_tested_fingerprint: tuple[object, ...] | None = None
-        self.test_status = StringVar(
-            value="Paste an Azure Portal resource URL or resource ID."
-        )
+        self.test_status = StringVar(value="Define a check, then test it before applying.")
         self._build()
         for variable in (
+            self.kind,
             self.name,
             self.reference,
             self.tenant,
@@ -998,7 +1059,9 @@ class CheckManager:
             self.enabled,
         ):
             variable.trace_add("write", self._invalidate_test)
+        self.kind.trace_add("write", self._kind_changed)
         self._refresh_list()
+        self._kind_changed()
 
     def _build(self) -> None:
         outer = ttk.Frame(self.window, padding=14)
@@ -1008,7 +1071,7 @@ class CheckManager:
         ttk.Label(left, text="Configured checks", font=("Segoe UI", 11, "bold")).pack(
             anchor="w"
         )
-        self.listbox = __import__("tkinter").Listbox(left, width=30, height=16)
+        self.listbox = __import__("tkinter").Listbox(left, width=31, height=24)
         self.listbox.pack(fill=Y, expand=True, pady=(8, 8))
         self.listbox.bind("<<ListboxSelect>>", self._select)
         ttk.Button(left, text="New check", command=self._new).pack(fill=X)
@@ -1028,14 +1091,69 @@ class CheckManager:
         ttk.Label(form, text="Check details", font=("Segoe UI", 11, "bold")).pack(
             anchor="w"
         )
-        self._field(form, "Friendly name", self.name)
-        self._field(form, "Azure Portal URL or resource ID", self.reference)
-        self._field(form, "Tenant ID/domain (optional safety pin)", self.tenant)
-        self._field(form, "Healthy provisioning states", self.expected)
-        ttk.Checkbutton(form, text="Enabled", variable=self.enabled).pack(
-            anchor="w", pady=(10, 0)
+        ttk.Label(form, text="Check type").pack(anchor="w", pady=(10, 2))
+        self.kind_choice = ttk.Combobox(
+            form,
+            textvariable=self.kind,
+            values=("Provisioning state", "Resource Graph / KQL findings"),
+            state="readonly",
         )
-        ttk.Label(form, textvariable=self.test_status, wraplength=430).pack(
+        self.kind_choice.pack(fill=X)
+        self._field(form, "Friendly name", self.name)
+
+        self.provisioning_form = ttk.Frame(form)
+        self._field(
+            self.provisioning_form,
+            "Azure Portal URL or resource ID",
+            self.reference,
+        )
+        self._field(
+            self.provisioning_form,
+            "Tenant ID/domain (optional safety pin)",
+            self.tenant,
+        )
+        self._field(
+            self.provisioning_form,
+            "Healthy provisioning states",
+            self.expected,
+        )
+
+        self.graph_form = ttk.Frame(form)
+        ttk.Label(
+            self.graph_form,
+            text="Runs across all enabled subscriptions available to this login.",
+            wraplength=540,
+        ).pack(anchor="w", pady=(10, 6))
+        ttk.Label(self.graph_form, text="Starting template").pack(anchor="w")
+        template_values = (*GRAPH_TEMPLATES.keys(), "Custom KQL findings query")
+        self.template_choice = ttk.Combobox(
+            self.graph_form,
+            textvariable=self.template,
+            values=template_values,
+            state="readonly",
+        )
+        self.template_choice.pack(fill=X, pady=(2, 8))
+        self.template_choice.bind("<<ComboboxSelected>>", self._apply_template)
+        ttk.Label(
+            self.graph_form,
+            text="KQL findings query — zero rows is healthy; any row is a confirmed failure",
+        ).pack(anchor="w")
+        self.query_text = Text(
+            self.graph_form,
+            height=15,
+            wrap="none",
+            font=("Cascadia Mono", 9),
+            undo=True,
+        )
+        self.query_text.pack(fill=BOTH, expand=True, pady=(2, 0))
+        self.query_text.bind("<<Modified>>", self._query_modified)
+        self._set_query(GRAPH_TEMPLATES["Active Azure Monitor alerts"])
+
+        self.enabled_check = ttk.Checkbutton(
+            form, text="Enabled", variable=self.enabled
+        )
+        self.enabled_check.pack(anchor="w", pady=(10, 0))
+        ttk.Label(form, textvariable=self.test_status, wraplength=540).pack(
             anchor="w", pady=(14, 8)
         )
         actions = ttk.Frame(form)
@@ -1052,7 +1170,7 @@ class CheckManager:
         ttk.Label(
             form,
             text=f"Stored locally in {config_path()}\nNo Azure credentials or tokens are stored here.",
-            wraplength=430,
+            wraplength=540,
         ).pack(anchor="w")
 
     @staticmethod
@@ -1064,7 +1182,8 @@ class CheckManager:
         self.listbox.delete(0, END)
         for check in self.working.checks:
             marker = "" if check.enabled else " (disabled)"
-            self.listbox.insert(END, f"{check.name}{marker}")
+            check_type = "KQL" if check.kind == "azure_resource_graph" else "State"
+            self.listbox.insert(END, f"[{check_type}] {check.name}{marker}")
 
     def _select(self, _event: object = None) -> None:
         selection = self.listbox.curselection()
@@ -1072,23 +1191,67 @@ class CheckManager:
             return
         check = self.working.checks[selection[0]]
         self.selected_id = check.id
+        self.kind.set(
+            "Resource Graph / KQL findings"
+            if check.kind == "azure_resource_graph"
+            else "Provisioning state"
+        )
         self.name.set(check.name)
         self.reference.set(check.portal_url or check.resource_id)
         self.tenant.set(check.tenant_id)
         self.expected.set(", ".join(check.expected_values))
+        self._set_query(check.query)
+        self.template.set("Custom KQL findings query")
         self.enabled.set(check.enabled)
         self.test_status.set("Ready to test or edit.")
 
     def _new(self) -> None:
         self.selected_id = None
         self.draft_id = str(uuid.uuid4())
+        self.kind.set("Provisioning state")
         self.name.set("")
         self.reference.set("")
         self.tenant.set("")
         self.expected.set("Succeeded")
+        self.template.set("Active Azure Monitor alerts")
+        self._set_query(GRAPH_TEMPLATES["Active Azure Monitor alerts"])
         self.enabled.set(True)
         self.listbox.selection_clear(0, END)
         self.test_status.set("Paste an Azure Portal resource URL or resource ID.")
+
+    def _kind_changed(self, *_args: object) -> None:
+        if not hasattr(self, "provisioning_form"):
+            return
+        self.provisioning_form.pack_forget()
+        self.graph_form.pack_forget()
+        if self.kind.get() == "Resource Graph / KQL findings":
+            self.graph_form.pack(
+                fill=BOTH, expand=True, before=self.enabled_check
+            )
+            self.test_status.set(
+                "The query is read-only. Test it live before applying the rule."
+            )
+        else:
+            self.provisioning_form.pack(fill=X, before=self.enabled_check)
+            self.test_status.set("Paste an Azure Portal resource URL or resource ID.")
+
+    def _set_query(self, value: str) -> None:
+        self.query_text.delete("1.0", END)
+        self.query_text.insert("1.0", value)
+        self.query_text.edit_modified(False)
+
+    def _query_modified(self, _event: object = None) -> None:
+        if self.query_text.edit_modified():
+            self.query_text.edit_modified(False)
+            self._invalidate_test()
+
+    def _apply_template(self, _event: object = None) -> None:
+        selected = self.template.get()
+        query = GRAPH_TEMPLATES.get(selected, CUSTOM_TEMPLATE)
+        self._set_query(query)
+        if not self.name.get().strip():
+            self.name.set(selected.replace("Azure ", ""))
+        self._invalidate_test()
 
     def _invalidate_test(self, *_args: object) -> None:
         self.last_tested_fingerprint = None
@@ -1106,9 +1269,26 @@ class CheckManager:
             tuple(definition.expected_values),
             definition.enabled,
             definition.kind,
+            definition.query,
+            definition.scope,
         )
 
     def _definition_from_form(self) -> CheckDefinition:
+        if self.kind.get() == "Resource Graph / KQL findings":
+            definition = CheckDefinition(
+                id=self.selected_id or self.draft_id,
+                name=self.name.get().strip(),
+                resource_id="",
+                portal_url="",
+                tenant_id="",
+                expected_values=[],
+                enabled=self.enabled.get(),
+                kind="azure_resource_graph",
+                query=self.query_text.get("1.0", "end-1c"),
+                scope="all_accessible",
+            )
+            validate_definition(definition)
+            return definition
         resource_id, portal_url, tenant_hint = parse_resource_reference(
             self.reference.get()
         )
@@ -1125,7 +1305,7 @@ class CheckManager:
             == self.app.config.azure_subscription_id.casefold()
             else ""
         )
-        return CheckDefinition(
+        definition = CheckDefinition(
             id=self.selected_id or self.draft_id,
             name=self.name.get().strip(),
             resource_id=resource_id,
@@ -1136,6 +1316,8 @@ class CheckManager:
             ],
             enabled=self.enabled.get(),
         )
+        validate_definition(definition)
+        return definition
 
     @staticmethod
     def _looks_like_uuid(value: str) -> bool:
@@ -1161,7 +1343,7 @@ class CheckManager:
         self.apply_button.state(["disabled"])
 
         def worker() -> None:
-            result = run_provisioning_check(
+            result = run_check(
                 definition,
                 timeout_seconds=self.working.timeout_seconds,
                 retry_count=self.working.retry_count,
@@ -1175,7 +1357,11 @@ class CheckManager:
     def _test_finished(
         self, result: CheckResult, tested_fingerprint: tuple[object, ...]
     ) -> None:
-        self.test_status.set(f"{result.state.value.upper()}: {result.summary}")
+        message = f"{result.state.value.upper()}: {result.summary}"
+        if result.findings:
+            names = ", ".join(item.title for item in result.findings[:3])
+            message += f" Sample: {names}"
+        self.test_status.set(message)
         try:
             current = self._fingerprint(self._definition_from_form())
         except ValueError:
@@ -1254,7 +1440,7 @@ class CheckManager:
             return
         messagebox.showinfo(
             "Rules exported",
-            "The rule pack contains resource identifiers and expected states, but no credentials or tokens.",
+            "The rule pack contains resource identifiers, expected states, and KQL text, but no credentials or tokens. Review query text before sharing it because it may reveal internal names.",
             parent=self.window,
         )
 
@@ -1327,7 +1513,7 @@ def main() -> int:
         return 0
     configure_logging()
     try:
-        BeaconApp().run()
+        BeaconApp(startup_launch="--startup" in sys.argv[1:]).run()
     except Exception:
         LOGGER.exception("Fatal application error")
         raise

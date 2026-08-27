@@ -14,9 +14,9 @@ from urllib.parse import unquote, urlparse
 from .model import CheckDefinition
 
 APP_NAME = "AzureHealthBeacon"
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 RULE_PACK_FORMAT = "azure-health-beacon-rule-pack"
-RULE_PACK_SCHEMA_VERSION = 1
+RULE_PACK_SCHEMA_VERSION = 2
 MAX_RULE_PACK_BYTES = 1_000_000
 MAX_RULES_PER_PACK = 500
 AUTHORIZATION_MAX_AGE = timedelta(days=14)
@@ -30,6 +30,8 @@ CHECK_KEYS = {
     "expected_values",
     "enabled",
     "kind",
+    "query",
+    "scope",
 }
 
 
@@ -47,6 +49,8 @@ class AppConfig:
     retry_count: int = 2
     update_mode: str = "manual"
     last_update_check_utc: str = ""
+    start_with_windows: bool = False
+    start_minimized: bool = False
     checks: list[CheckDefinition] = field(default_factory=list)
 
 
@@ -107,8 +111,8 @@ def _definition_from_dict(raw: dict[str, Any]) -> CheckDefinition:
             f"Unsupported fields in check definition: {', '.join(sorted(unknown))}"
         )
     expected = raw.get("expected_values", ["Succeeded"])
-    if not isinstance(expected, list) or not expected:
-        raise ValueError("Each check requires at least one expected value")
+    if not isinstance(expected, list):
+        raise TypeError("Expected values must be a list")
     definition = CheckDefinition(
         id=str(raw["id"]),
         name=str(raw["name"]).strip(),
@@ -118,6 +122,8 @@ def _definition_from_dict(raw: dict[str, Any]) -> CheckDefinition:
         expected_values=[str(item).strip() for item in expected if str(item).strip()],
         enabled=bool(raw.get("enabled", True)),
         kind=str(raw.get("kind", "azure_resource_provisioning")),
+        query=str(raw.get("query", "")),
+        scope=str(raw.get("scope", "resource")),
     )
     validate_definition(definition)
     return definition
@@ -130,7 +136,7 @@ def load_config(path: Path | None = None) -> AppConfig:
     raw = json.loads(target.read_text(encoding="utf-8"))
     _reject_sensitive_keys(raw)
     loaded_schema = int(raw.get("schema_version", 0))
-    if loaded_schema not in (1, 2, SCHEMA_VERSION):
+    if loaded_schema not in (1, 2, 3, SCHEMA_VERSION):
         raise ValueError(
             f"Unsupported configuration schema: {raw.get('schema_version')}"
         )
@@ -164,6 +170,8 @@ def load_config(path: Path | None = None) -> AppConfig:
         retry_count=retries,
         update_mode=update_mode,
         last_update_check_utc=str(raw.get("last_update_check_utc", "")).strip(),
+        start_with_windows=bool(raw.get("start_with_windows", False)),
+        start_minimized=bool(raw.get("start_minimized", False)),
         checks=checks,
     )
 
@@ -184,6 +192,8 @@ def save_config(config: AppConfig, path: Path | None = None) -> Path:
         "retry_count": config.retry_count,
         "update_mode": config.update_mode,
         "last_update_check_utc": config.last_update_check_utc,
+        "start_with_windows": config.start_with_windows,
+        "start_minimized": config.start_minimized,
         "checks": [asdict(check) for check in config.checks],
     }
     _reject_sensitive_keys(payload)
@@ -245,18 +255,38 @@ def clear_connection_metadata(config: AppConfig) -> None:
 
 
 def validate_definition(definition: CheckDefinition) -> None:
-    if definition.kind != "azure_resource_provisioning":
+    supported = {"azure_resource_provisioning", "azure_resource_graph"}
+    if definition.kind not in supported:
         raise ValueError(f"Unsupported check kind: {definition.kind}")
     if not definition.id or not definition.name:
         raise ValueError("Check ID and name are required")
+    if len(definition.name) > 200:
+        raise ValueError("Check name is unexpectedly long")
+    if definition.kind == "azure_resource_graph":
+        if definition.scope != "all_accessible":
+            raise ValueError("Resource Graph checks must use all accessible subscriptions")
+        if not definition.query.strip():
+            raise ValueError("Enter a Resource Graph KQL query")
+        if len(definition.query) > 20_000:
+            raise ValueError("Resource Graph query exceeds the 20,000-character limit")
+        if any(
+            ord(character) < 32 and character not in "\r\n\t"
+            for character in definition.query
+        ):
+            raise ValueError("Resource Graph queries cannot contain control characters")
+        if definition.resource_id or definition.tenant_id or definition.expected_values:
+            raise ValueError("Resource Graph checks cannot contain resource-only fields")
+        _validate_portal_url(definition.portal_url)
+        _reject_secret_like_text(asdict(definition), "check")
+        return
     if not is_valid_resource_id(definition.resource_id):
         raise ValueError(
             "Enter a complete Azure resource ID or Azure Portal resource URL"
         )
     if not definition.expected_values:
         raise ValueError("At least one expected provisioning state is required")
-    if len(definition.name) > 200 or len(definition.resource_id) > 2048:
-        raise ValueError("Check name or resource ID is unexpectedly long")
+    if len(definition.resource_id) > 2048:
+        raise ValueError("Resource ID is unexpectedly long")
     if len(definition.portal_url) > 4096 or len(definition.tenant_id) > 256:
         raise ValueError("Portal URL or tenant value is unexpectedly long")
     if len(definition.expected_values) > 20 or any(
@@ -271,17 +301,22 @@ def validate_definition(definition: CheckDefinition) -> None:
     ]
     if any(any(ord(character) < 32 for character in value) for value in text_values):
         raise ValueError("Check definitions cannot contain control characters")
-    if definition.portal_url:
-        parsed = urlparse(definition.portal_url)
-        if (
-            parsed.scheme != "https"
-            or parsed.hostname != "portal.azure.com"
-            or parsed.username is not None
-            or parsed.password is not None
-            or parsed.port not in (None, 443)
-        ):
-            raise ValueError("Portal links must use HTTPS on an Azure Portal domain")
+    _validate_portal_url(definition.portal_url)
     _reject_secret_like_text(asdict(definition), "check")
+
+
+def _validate_portal_url(value: str) -> None:
+    if not value:
+        return
+    parsed = urlparse(value)
+    if (
+        parsed.scheme != "https"
+        or parsed.hostname != "portal.azure.com"
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.port not in (None, 443)
+    ):
+        raise ValueError("Portal links must use HTTPS on an Azure Portal domain")
 
 
 def is_valid_resource_id(value: str) -> bool:
@@ -382,7 +417,7 @@ def import_rule_pack(path: Path) -> list[CheckDefinition]:
     _reject_secret_like_text(raw, "rule_pack")
     if raw.get("format") != RULE_PACK_FORMAT:
         raise ValueError("This is not an Azure Health Beacon rule pack")
-    if int(raw.get("schema_version", 0)) != RULE_PACK_SCHEMA_VERSION:
+    if int(raw.get("schema_version", 0)) not in (1, RULE_PACK_SCHEMA_VERSION):
         raise ValueError("Unsupported rule-pack schema")
     items = raw.get("checks")
     if not isinstance(items, list) or not items:

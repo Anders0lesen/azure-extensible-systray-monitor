@@ -29,6 +29,8 @@ class CheckDefinition:
     expected_values: list[str] = field(default_factory=lambda: ["Succeeded"])
     enabled: bool = True
     kind: str = "azure_resource_provisioning"
+    query: str = ""
+    scope: str = "resource"
 
     @property
     def subscription_id(self) -> str:
@@ -48,6 +50,14 @@ class CheckResult:
     observed_value: str = ""
     checked_at: datetime = field(default_factory=lambda: datetime.now().astimezone())
     first_detected_at: datetime | None = None
+    portal_url: str = ""
+    findings: list[CheckFinding] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class CheckFinding:
+    title: str
+    summary: str = ""
     portal_url: str = ""
 
 

@@ -5,15 +5,23 @@ import os
 import re
 import shutil
 import subprocess
+import tempfile
 import time
+from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
 from .config import app_data_dir
-from .model import CheckDefinition, CheckResult, CheckState
+from .model import CheckDefinition, CheckFinding, CheckResult, CheckState
 
 CREATE_NO_WINDOW = 0x08000000 if os.name == "nt" else 0
+RESOURCE_GRAPH_URL = (
+    "https://management.azure.com/providers/Microsoft.ResourceGraph/resources"
+    "?api-version=2022-10-01"
+)
+RESOURCE_GRAPH_BATCH_SIZE = 1000
+MAX_FINDINGS_TO_DISPLAY = 25
 
 
 @dataclass(frozen=True, slots=True)
@@ -321,4 +329,181 @@ def run_provisioning_check(
         last_error,
         checked_at=datetime.now().astimezone(),
         portal_url=portal_url,
+    )
+
+
+def _finding_from_row(row: dict[str, object]) -> CheckFinding:
+    title_keys = (
+        "title",
+        "name",
+        "targetResourceName",
+        "policyAssignmentName",
+        "availabilityState",
+        "id",
+    )
+    title = next((str(row[key]) for key in title_keys if row.get(key)), "Azure finding")
+    details = []
+    for key, value in row.items():
+        if key.casefold() in {"id", "subscriptionid", "title"} or value in (None, ""):
+            continue
+        rendered = " ".join(str(value).split())
+        details.append(f"{key}: {rendered[:120]}")
+        if len(details) == 4:
+            break
+    resource_id = str(
+        row.get("id") or row.get("resourceId") or row.get("targetResourceId") or ""
+    )
+    portal_url = ""
+    if resource_id.casefold().startswith("/subscriptions/"):
+        portal_url = f"https://portal.azure.com/#/resource{resource_id}/overview"
+    return CheckFinding(title=title[:200], summary=" • ".join(details)[:500], portal_url=portal_url)
+
+
+def _graph_rows(payload: object) -> list[dict[str, object]]:
+    if not isinstance(payload, dict):
+        raise TypeError("Resource Graph returned an unreadable response")
+    data = payload.get("data", [])
+    if isinstance(data, list):
+        return [item for item in data if isinstance(item, dict)]
+    if isinstance(data, dict):
+        columns = data.get("columns", [])
+        rows = data.get("rows", [])
+        if isinstance(columns, list) and isinstance(rows, list):
+            names = [str(item.get("name", "")) for item in columns if isinstance(item, dict)]
+            return [dict(zip(names, row, strict=False)) for row in rows if isinstance(row, list)]
+    raise ValueError("Resource Graph returned an unreadable result table")
+
+
+def run_resource_graph_check(
+    definition: CheckDefinition, *, timeout_seconds: int = 30, retry_count: int = 2
+) -> CheckResult:
+    """Run a data-only findings query across every enabled subscription in the login."""
+    subscriptions, subscription_error = list_subscriptions(timeout_seconds)
+    if subscription_error:
+        return CheckResult(
+            definition.id,
+            definition.name,
+            CheckState.UNCONNECTABLE,
+            subscription_error,
+            portal_url=definition.portal_url,
+        )
+
+    by_tenant: dict[str, list[AzureSubscription]] = defaultdict(list)
+    for subscription in subscriptions:
+        by_tenant[subscription.tenant_id].append(subscription)
+
+    findings: list[CheckFinding] = []
+    total_records = 0
+    errors: list[str] = []
+    for tenant_subscriptions in by_tenant.values():
+        for offset in range(0, len(tenant_subscriptions), RESOURCE_GRAPH_BATCH_SIZE):
+            batch = tenant_subscriptions[offset : offset + RESOURCE_GRAPH_BATCH_SIZE]
+            request = {
+                "subscriptions": [item.id for item in batch],
+                "query": definition.query,
+                "options": {"resultFormat": "objectArray", "$top": MAX_FINDINGS_TO_DISPLAY},
+            }
+            app_data_dir().mkdir(parents=True, exist_ok=True)
+            handle, request_name = tempfile.mkstemp(
+                prefix="resource-graph-", suffix=".json", dir=app_data_dir()
+            )
+            try:
+                with os.fdopen(handle, "w", encoding="utf-8") as stream:
+                    json.dump(request, stream)
+                arguments = [
+                    "rest",
+                    "--method",
+                    "post",
+                    "--url",
+                    RESOURCE_GRAPH_URL,
+                    "--subscription",
+                    batch[0].id,
+                    "--body",
+                    f"@{request_name}",
+                    "--output",
+                    "json",
+                    "--only-show-errors",
+                ]
+                last_error = "Resource Graph did not return a result."
+                for attempt in range(retry_count + 1):
+                    try:
+                        completed = _run_az(arguments, timeout_seconds)
+                    except subprocess.TimeoutExpired:
+                        last_error = (
+                            f"Resource Graph timed out after {timeout_seconds} seconds."
+                        )
+                    except (FileNotFoundError, OSError) as error:
+                        last_error = _redact(str(error))
+                    else:
+                        if completed.returncode == 0:
+                            try:
+                                payload = json.loads(completed.stdout)
+                                rows = _graph_rows(payload)
+                                reported = int(payload.get("totalRecords", len(rows)))
+                            except (json.JSONDecodeError, TypeError, ValueError) as error:
+                                last_error = _redact(str(error))
+                            else:
+                                total_records += max(reported, len(rows))
+                                remaining = MAX_FINDINGS_TO_DISPLAY - len(findings)
+                                findings.extend(
+                                    _finding_from_row(row) for row in rows[:remaining]
+                                )
+                                last_error = ""
+                                break
+                        else:
+                            last_error = _redact(
+                                completed.stderr
+                                or completed.stdout
+                                or "Resource Graph query failed."
+                            )
+                    if attempt < retry_count:
+                        time.sleep(min(2**attempt, 4))
+                if last_error:
+                    errors.append(last_error)
+            finally:
+                Path(request_name).unlink(missing_ok=True)
+
+    scope_text = f"{len(subscriptions)} accessible subscription"
+    if len(subscriptions) != 1:
+        scope_text += "s"
+    if total_records:
+        summary = f"Found {total_records} matching row(s) across {scope_text}."
+        if errors:
+            summary += " Some tenant scopes could not be checked."
+        return CheckResult(
+            definition.id,
+            definition.name,
+            CheckState.FAILED,
+            summary,
+            observed_value=str(total_records),
+            portal_url=definition.portal_url,
+            findings=findings,
+        )
+    if errors:
+        return CheckResult(
+            definition.id,
+            definition.name,
+            CheckState.UNCONNECTABLE,
+            f"Could not verify every Azure scope: {errors[0]}",
+            portal_url=definition.portal_url,
+        )
+    return CheckResult(
+        definition.id,
+        definition.name,
+        CheckState.HEALTHY,
+        f"No matching rows across {scope_text}.",
+        observed_value="0",
+        portal_url=definition.portal_url,
+    )
+
+
+def run_check(
+    definition: CheckDefinition, *, timeout_seconds: int = 30, retry_count: int = 2
+) -> CheckResult:
+    if definition.kind == "azure_resource_graph":
+        return run_resource_graph_check(
+            definition, timeout_seconds=timeout_seconds, retry_count=retry_count
+        )
+    return run_provisioning_check(
+        definition, timeout_seconds=timeout_seconds, retry_count=retry_count
     )

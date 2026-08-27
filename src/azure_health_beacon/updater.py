@@ -211,15 +211,14 @@ def download_verified_installer(
 
 
 def launch_installer(installer: Path, *, automatic: bool) -> None:
-    arguments = [str(installer)]
-    if automatic:
-        arguments.extend(
-            [
-                "/VERYSILENT",
-                "/SUPPRESSMSGBOXES",
-                "/NORESTART",
-                "/CLOSEAPPLICATIONS",
-                "/RESTARTAPPLICATIONS",
-            ]
-        )
+    # Both an explicitly approved update and opt-in automatic updating are
+    # in-place operations. The surrounding UI owns consent and error reporting.
+    arguments = [
+        str(installer),
+        "/VERYSILENT",
+        "/SUPPRESSMSGBOXES",
+        "/NORESTART",
+        "/CLOSEAPPLICATIONS",
+        "/RESTARTAPPLICATIONS",
+    ]
     subprocess.Popen(arguments, cwd=installer.parent, close_fds=True)  # noqa: S603
