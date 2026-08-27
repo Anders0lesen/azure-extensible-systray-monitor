@@ -768,6 +768,7 @@ def _log_rows(payload: object) -> list[dict[str, object]]:
 def run_log_analytics_check(
     definition: CheckDefinition, *, timeout_seconds: int = 30, retry_count: int = 2
 ) -> CheckResult:
+    bounded_query = f"{definition.query.rstrip()}\n| take {MAX_FINDINGS_TO_DISPLAY + 1}"
     arguments = [
         "monitor",
         "log-analytics",
@@ -775,7 +776,7 @@ def run_log_analytics_check(
         "--workspace",
         definition.workspace_id,
         "--analytics-query",
-        definition.query,
+        bounded_query,
         "--timespan",
         f"PT{definition.lookback_minutes}M",
         "--output",
@@ -801,12 +802,17 @@ def run_log_analytics_check(
                         _finding_from_row(row) for row in rows[:MAX_FINDINGS_TO_DISPLAY]
                     ]
                     if rows:
+                        count_text = (
+                            f"{MAX_FINDINGS_TO_DISPLAY}+"
+                            if len(rows) > MAX_FINDINGS_TO_DISPLAY
+                            else str(len(rows))
+                        )
                         return CheckResult(
                             definition.id,
                             definition.name,
                             CheckState.FAILED,
-                            f"Found {len(rows)} matching log row(s) in the last {definition.lookback_minutes} minute(s).",
-                            observed_value=str(len(rows)),
+                            f"Found {count_text} matching log row(s) in the last {definition.lookback_minutes} minute(s).",
+                            observed_value=count_text,
                             portal_url=definition.portal_url,
                             findings=findings,
                         )

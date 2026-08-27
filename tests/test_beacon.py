@@ -489,6 +489,8 @@ class ExtensibleSignalTests(unittest.TestCase):
         arguments = run_az.call_args.args[0]
         self.assertIn("--workspace", arguments)
         self.assertIn("--analytics-query", arguments)
+        query = arguments[arguments.index("--analytics-query") + 1]
+        self.assertTrue(query.endswith("| take 26"))
 
     @patch("azure_health_beacon.azure._run_az")
     def test_log_query_error_is_unknown_not_healthy(self, run_az) -> None:
