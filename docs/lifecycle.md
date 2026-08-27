@@ -20,7 +20,7 @@ manual by default
           -> require exact installer/checksum assets
               -> download to app-owned local update storage
                   -> verify GitHub digest and release checksum
-                      -> launch per-user installer
+                      -> launch per-user installer silently after approval
                           -> close and restart Beacon
 ```
 
@@ -53,11 +53,11 @@ The connection is blocked before deletion begins. If a file lock prevents immedi
 
 ### Remove application
 
-The installer does not add services, drivers, scheduled tasks, or startup entries. To remove it:
+The installer does not add services, drivers, or scheduled tasks. The app can add one current-user Windows startup value only after explicit opt-in. To remove it:
 
 1. Exit from the tray menu.
 2. Open **Settings → Apps → Installed apps**.
 3. Uninstall **Azure Health Beacon**.
 4. Delete `%LOCALAPPDATA%\AzureHealthBeacon` only if rules, logs, configuration, downloaded updates, and the isolated Azure CLI profile should also be removed.
 
-Uninstall leaves local data behind by design, allowing a later reinstall to retain rules. Use **Delete Azure connection** before uninstall when the app-owned Azure CLI profile must be purged without removing retained rules.
+Uninstall removes the app's Windows startup value but leaves local data behind by design, allowing a later reinstall to retain rules. Use **Delete Azure connection** before uninstall when the app-owned Azure CLI profile must be purged without removing retained rules.

@@ -17,7 +17,7 @@ Use GitHub private vulnerability reporting/security advisories. If unavailable, 
 - Never add a username/password form to the Beacon.
 - Never request, print, persist, export, or log access or refresh tokens.
 - Never support client secrets, storage keys, SAS tokens, PATs, connection strings, or private keys in rules.
-- Never run imported commands, scripts, query expressions, or arbitrary URLs.
+- Never run imported commands, scripts, or arbitrary URLs. Imported KQL may be sent only to Azure's read-only Resource Graph endpoint after review and a live test.
 - Never run `az account set` or alter the user's global Azure CLI context.
 - Never read, clear, log out, or delete `%USERPROFILE%\.azure`.
 - Never make the 14-day authorization lease configurable.
@@ -59,6 +59,7 @@ Logs rotate and do not contain successful Azure response bodies. Azure CLI error
 - Provisioning checks request only `properties.provisioningState` as text.
 - Every lookup includes its subscription ID.
 - Optional tenant pins are verified before lookup.
+- Resource Graph calls explicitly enumerate enabled subscriptions, are split by tenant, and retain only compact finding previews in memory; response bodies are never logged.
 
 ## Update boundary
 
@@ -72,6 +73,6 @@ No Azure credential, rule, tenant ID, subscription ID, or isolated Azure CLI dat
 
 ## Rule-pack boundary
 
-Rule packs are strict data-only JSON. Imports reject unknown fields, arbitrary commands, scripts, non-Azure links, credential-like keys, common secret formats, oversized files, excessive rule counts, and duplicate IDs. Imported rules are disabled until reviewed, tested, and explicitly applied.
+Rule packs are strict data-only JSON. They may contain Resource Graph KQL but never local executable code. Imports reject unknown fields, arbitrary commands, scripts, non-Azure links, credential-like keys, common secret formats, oversized files, excessive rule counts, and duplicate IDs. Imported rules are disabled until reviewed, tested, and explicitly applied.
 
 For details, see [Credential security](docs/credential-security.md).

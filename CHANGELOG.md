@@ -2,6 +2,22 @@
 
 This project uses [Semantic Versioning](https://semver.org/). Changes are grouped by release so each GitHub tag has a short, human-readable scope.
 
+## [0.4.0] - 2026-08-27
+
+### Added
+
+- Resource Graph/KQL findings rules across every enabled subscription visible to the signed-in account.
+- Reviewed templates for fired Azure Monitor alerts, Resource Health problems, active Service Health incidents, and Azure Policy non-compliance.
+- Native KQL editor with live test-before-apply behaviour and compact finding previews.
+- Explicit opt-in settings for starting with Windows and starting minimized.
+
+### Changed
+
+- Manual, user-approved updates now install silently in place and restart the Beacon.
+- A successful update check is reported inline as “Fully up to date” instead of opening another dialog.
+- Rule-pack schema 2 carries credential-free KQL rules; schema 1 packs remain importable and all imports remain disabled pending review.
+- Red remains reserved for confirmed Azure findings; query, access, tenant, timeout, and partial-scope uncertainty stays grey.
+
 ## [0.3.0] - 2026-08-26
 
 ### Added
@@ -34,3 +50,4 @@ First public preview.
 
 [0.2.0]: https://github.com/Anders0lesen/azure-extensible-systray-monitor/releases/tag/v0.2.0
 [0.3.0]: https://github.com/Anders0lesen/azure-extensible-systray-monitor/releases/tag/v0.3.0
+[0.4.0]: https://github.com/Anders0lesen/azure-extensible-systray-monitor/releases/tag/v0.4.0

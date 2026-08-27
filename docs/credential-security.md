@@ -10,7 +10,7 @@ The safest application-owned credential database is no credential database. Azur
 User
   -> Microsoft sign-in / Windows Web Account Manager
       -> app-isolated Azure CLI profile
-          -> read-only Azure Resource Manager command
+          -> read-only Azure Resource Manager or Resource Graph request
               -> non-secret status returned to Azure Health Beacon
 ```
 
@@ -63,5 +63,6 @@ Removing the Windows work account is deliberately out of scope because it affect
 - Machine-wide Azure CLI under `Program Files` is preferred.
 - MSI Azure CLI is invoked through its Python module, not its `.cmd` wrapper.
 - Arguments are a list, never a concatenated shell string.
-- Rules cannot select commands, executables, or query expressions.
+- Rules cannot select commands or executables. KQL is accepted only for Azure's read-only Resource Graph endpoint and never reaches a local shell.
 - Portal links must use exactly `https://portal.azure.com`.
+- Resource Graph response bodies are not logged; at most 25 compact findings are kept in memory for display.
