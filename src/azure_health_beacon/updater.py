@@ -221,4 +221,14 @@ def launch_installer(installer: Path, *, automatic: bool) -> None:
         "/CLOSEAPPLICATIONS",
         "/RESTARTAPPLICATIONS",
     ]
-    subprocess.Popen(arguments, cwd=installer.parent, close_fds=True)  # noqa: S603
+    # The installer and the app it restarts must not inherit this onefile
+    # process's temporary _MEI runtime. PyInstaller 6.9+ requires this public
+    # flag for a restarted process that must outlive its parent.
+    environment = os.environ.copy()
+    environment["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
+    subprocess.Popen(  # noqa: S603
+        arguments,
+        cwd=installer.parent,
+        close_fds=True,
+        env=environment,
+    )

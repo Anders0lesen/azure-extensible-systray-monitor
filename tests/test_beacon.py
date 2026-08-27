@@ -682,10 +682,24 @@ class UpdateTests(unittest.TestCase):
     @patch("azure_health_beacon.updater.subprocess.Popen")
     def test_approved_manual_update_is_silent_and_restarts(self, popen) -> None:
         installer = Path(r"C:\Temp\AzureHealthBeacon-Setup-v0.4.0.exe")
-        launch_installer(installer, automatic=False)
+        with patch.dict(
+            "azure_health_beacon.updater.os.environ",
+            {
+                "_PYI_APPLICATION_HOME_DIR": r"C:\Temp\_MEI-stale",
+                "BEACON_TEST_MARKER": "preserved",
+            },
+            clear=True,
+        ):
+            launch_installer(installer, automatic=False)
         arguments = popen.call_args.args[0]
         self.assertIn("/VERYSILENT", arguments)
         self.assertIn("/RESTARTAPPLICATIONS", arguments)
+        environment = popen.call_args.kwargs["env"]
+        self.assertEqual(environment["PYINSTALLER_RESET_ENVIRONMENT"], "1")
+        self.assertEqual(environment["BEACON_TEST_MARKER"], "preserved")
+        self.assertEqual(
+            environment["_PYI_APPLICATION_HOME_DIR"], r"C:\Temp\_MEI-stale"
+        )
 
 
 class WindowsStartupTests(unittest.TestCase):

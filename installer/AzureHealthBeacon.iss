@@ -54,7 +54,20 @@ Name: "{group}\Azure Health Beacon"; Filename: "{app}\{#AppExeName}"
 Name: "{userdesktop}\Azure Health Beacon"; Filename: "{app}\{#AppExeName}"; Tasks: desktopicon
 
 [Run]
-Filename: "{app}\{#AppExeName}"; Description: "Start Azure Health Beacon"; Flags: nowait
+Filename: "{app}\{#AppExeName}"; Description: "Start Azure Health Beacon"; Flags: nowait; BeforeInstall: PreparePyInstallerRestart
 
 [Registry]
 Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: none; ValueName: "AzureHealthBeacon"; Flags: uninsdeletevalue
+
+[Code]
+function SetEnvironmentVariableW(lpName, lpValue: String): Boolean;
+  external 'SetEnvironmentVariableW@kernel32.dll stdcall';
+
+procedure PreparePyInstallerRestart;
+begin
+  { A v0.5.0 or older onefile process can pass a soon-to-be-deleted _MEI
+    runtime through Setup. Force the installed app to unpack as a new,
+    independent PyInstaller instance before [Run] starts it. }
+  if not SetEnvironmentVariableW('PYINSTALLER_RESET_ENVIRONMENT', '1') then
+    RaiseException('Could not prepare the Azure Health Beacon restart environment.');
+end;
