@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import shutil
@@ -302,7 +303,8 @@ def validate_definition(definition: CheckDefinition) -> None:
         if definition.kind == "azure_log_analytics" and definition.scope != "workspace":
             raise ValueError("Log Analytics checks must target one workspace")
         if definition.kind == "azure_log_analytics" and not re.fullmatch(
-            r"[0-9a-fA-F-]{36}", definition.workspace_id
+            r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}",
+            definition.workspace_id,
         ):
             raise ValueError("Select a valid Log Analytics workspace")
         if not definition.query.strip():
@@ -330,6 +332,8 @@ def validate_definition(definition: CheckDefinition) -> None:
             raise ValueError("Select a complete Azure resource ID")
         if not definition.metric_name:
             raise ValueError("Select or enter a metric name")
+        if len(definition.metric_name) > 256 or len(definition.metric_namespace) > 512:
+            raise ValueError("Metric name or namespace is unexpectedly long")
         if definition.metric_aggregation not in {
             "Average",
             "Count",
@@ -350,8 +354,19 @@ def validate_definition(definition: CheckDefinition) -> None:
             raise ValueError("Unsupported metric comparison")
         if not 1 <= definition.lookback_minutes <= 10080:
             raise ValueError("Lookback must be between 1 minute and 7 days")
+        if not math.isfinite(definition.metric_threshold):
+            raise ValueError("Metric threshold must be a finite number")
         if len(definition.metric_filter) > 2000:
             raise ValueError("Metric dimension filter is unexpectedly long")
+        metric_text = (
+            definition.metric_name,
+            definition.metric_namespace,
+            definition.metric_filter,
+        )
+        if any(
+            any(ord(character) < 32 for character in value) for value in metric_text
+        ):
+            raise ValueError("Metric fields cannot contain control characters")
         _validate_portal_url(definition.portal_url)
         _reject_secret_like_text(asdict(definition), "check")
         return

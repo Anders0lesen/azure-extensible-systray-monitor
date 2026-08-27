@@ -31,6 +31,7 @@ from azure_health_beacon.config import (
     mark_connection_established,
     parse_resource_reference,
     save_config,
+    validate_definition,
 )
 from azure_health_beacon.model import (
     BeaconState,
@@ -562,6 +563,19 @@ class ExtensibleSignalTests(unittest.TestCase):
             self.assertEqual(
                 imported[0].workspace_id, self.log_definition().workspace_id
             )
+
+    def test_metric_rule_rejects_non_finite_threshold(self) -> None:
+        definition = CheckDefinition(
+            "metric-bad",
+            "Invalid threshold",
+            RESOURCE_ID,
+            expected_values=[],
+            kind="azure_monitor_metric",
+            metric_name="Percentage CPU",
+            metric_threshold=float("nan"),
+        )
+        with self.assertRaisesRegex(ValueError, "finite"):
+            validate_definition(definition)
 
 
 class FakeResponse(io.BytesIO):
