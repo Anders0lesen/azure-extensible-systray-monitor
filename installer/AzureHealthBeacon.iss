@@ -36,7 +36,7 @@ OutputBaseFilename=AzureHealthBeacon-Setup-v{#AppVersion}
 UninstallDisplayIcon={app}\{#AppExeName}
 VersionInfoVersion={#AppVersion}.0
 VersionInfoCompany={#AppPublisher}
-VersionInfoDescription=Azure provisioning-state tray monitor installer
+VersionInfoDescription=Azure multi-subscription health monitor installer
 VersionInfoProductName={#AppName}
 VersionInfoProductVersion={#AppVersion}
 
@@ -55,3 +55,6 @@ Name: "{userdesktop}\Azure Health Beacon"; Filename: "{app}\{#AppExeName}"; Task
 
 [Run]
 Filename: "{app}\{#AppExeName}"; Description: "Start Azure Health Beacon"; Flags: nowait
+
+[Registry]
+Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: none; ValueName: "AzureHealthBeacon"; Flags: uninsdeletevalue

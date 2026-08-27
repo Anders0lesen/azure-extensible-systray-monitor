@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "azure-extensible-systray-monitor"
-version = "0.3.0"
-description = "A Windows 11 Azure health beacon with credential-safe onboarding"
+version = "0.4.0"
+description = "A Windows 11 Azure health beacon with secure multi-subscription checks"
 readme = "README.md"
 requires-python = ">=3.12"
 license = "Unlicense"
