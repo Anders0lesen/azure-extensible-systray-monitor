@@ -48,6 +48,7 @@ Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription:
 
 [Files]
 Source: "..\dist\{#AppExeName}"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\dist\AzureHealthBeaconCore.exe"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
 Name: "{group}\Azure Health Beacon"; Filename: "{app}\{#AppExeName}"

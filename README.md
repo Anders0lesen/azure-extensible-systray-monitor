@@ -2,7 +2,7 @@
 
 <img src="assets/AzureHealthBeacon-Brand.png" alt="Azure Health Beacon" width="640">
 
-Current version: **0.6.0 public preview** — see the [changelog](CHANGELOG.md).
+Current version: **0.7.0 public preview** — see the [changelog](CHANGELOG.md).
 
 > **Prototype:** Windows 11 only. **Azure Health Beacon** lets you discover Azure signal surfaces and turn the properties, Resource Graph records, logs, Application Insights telemetry, and metrics you care about into tray warnings.
 
@@ -45,7 +45,7 @@ Read [Credential security](docs/credential-security.md) and [Security policy](SE
 
 ## Install
 
-Download the installer from the [latest GitHub release](https://github.com/Anders0lesen/azure-extensible-systray-monitor/releases/latest) and run `AzureHealthBeacon-Setup-v0.6.0.exe`. It installs for the current Windows user, adds a Start Menu entry, and does not request administrator access.
+Download the installer from the [latest GitHub release](https://github.com/Anders0lesen/azure-extensible-systray-monitor/releases/latest) and run `AzureHealthBeacon-Setup-v0.7.0.exe`. It installs for the current Windows user, adds a Start Menu entry, and does not request administrator access.
 
 The public-preview installer is not Authenticode code-signed yet, so Windows may show **Unknown publisher**. The release includes a SHA-256 checksum and GitHub build-provenance attestation. Do not install a copy obtained from anywhere except this repository.
 
@@ -55,10 +55,10 @@ The public-preview installer is not Authenticode code-signed yet, so Windows may
 2. Select **Sign in with Microsoft** in the automatically opened setup wizard.
 3. Complete Microsoft's account, Conditional Access, and MFA prompts.
 4. Select the intended subscription.
-5. Select **Verify Azure access**.
+5. Select **Test credentials and finish setup**.
 6. Continue to checks only after validation succeeds.
-7. Open **Discover Azure signals** to browse workspaces/tables or resources/metrics, or choose a source directly.
-8. Define what should count as a finding, select **Test without saving**, then **Save tested rule**.
+7. Select **Add a check**, then explicitly choose one of the six signal-source cards; nothing is preselected.
+8. Use the source-specific Azure discovery picker, define what counts as a finding, select **Test without saving**, then **Save and enable**.
 
 Until setup succeeds, the tray remains grey and monitoring/check-management commands are disabled.
 
@@ -78,7 +78,7 @@ The application artwork is used for Windows branding only. The tray deliberately
 
 ## Signal sources and rules
 
-Version `0.6.0` supports six strict, data-only signal sources:
+Version `0.7.0` supports six strict, data-only signal sources:
 
 - **Provisioning state:** confirm that one resource's `properties.provisioningState` matches the configured healthy states.
 - **VM power state:** read one virtual machine's live instance view and choose which `PowerState/...` values are healthy.
@@ -87,7 +87,7 @@ Version `0.6.0` supports six strict, data-only signal sources:
 - **Logs/Application Insights KQL:** select a discoverable Log Analytics workspace, browse its tables, and run full Azure Monitor KQL. Zero rows is healthy; returned rows are findings.
 - **Azure Monitor metric:** select any readable resource and one of its live metric definitions, then configure aggregation, lookback, reducer, optional dimension filter, comparison, and threshold.
 
-**Rule Studio** is dark by default and has a light-mode toggle in the top right. Rule names, sources, queries, thresholds, and enabled state are editable. **Discover Azure signals** reads the workspaces, table schemas, resources, metric names, units, aggregations, and dimensions available to the signed-in identity. Templates for Application Insights, AVD, Functions, containers, alerts, Resource Health, Service Health, and Policy are transparent starting points—not a limit on what can be monitored.
+The redesigned Windows shell is dark by default and has a light-mode toggle in the top right. Rule names, sources, queries, thresholds, and enabled state are editable. Source-specific discovery reads the workspaces, resources, metric names, units, aggregations, and dimensions available to the signed-in identity. The KQL editor remains transparent and user-controlled rather than hiding monitoring logic behind fixed check types.
 
 You can edit or write your own [Resource Graph query](https://learn.microsoft.com/azure/governance/resource-graph/concepts/query-language) or [Azure Monitor log query](https://learn.microsoft.com/azure/azure-monitor/logs/queries), then test the exact unsaved text. Azure Monitor Logs requires query/read permission on the selected workspace. Metric availability depends on the selected resource's definitions.
 
@@ -121,13 +121,14 @@ Requirements:
 
 - Windows 11
 - Python 3.12
+- .NET SDK 10
 - Machine-wide [Azure CLI](https://learn.microsoft.com/cli/azure/install-azure-cli-windows)
 
 ```powershell
 ./build.ps1
 ```
 
-The script creates `.venv`, installs pinned dependencies, runs tests, and builds `dist/AzureHealthBeacon.exe` without a console window.
+The script creates `.venv`, installs pinned dependencies, runs tests, and builds the self-contained Windows shell at `dist/AzureHealthBeacon.exe` plus its private engine at `dist/AzureHealthBeaconCore.exe`. The engine is launched hidden by the shell and does not listen on a network port.
 
 With Inno Setup 7 installed, build the per-user installer as well:
 

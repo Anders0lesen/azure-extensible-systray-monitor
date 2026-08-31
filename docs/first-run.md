@@ -18,7 +18,7 @@ After login, the Beacon reads enabled subscription names, IDs, and tenant IDs fr
 
 ## 4. Verify live access
 
-Select **Verify Azure access**. The Beacon performs a read-only request scoped to the selected subscription and returns only its resource-group count:
+Select **Test credentials and finish setup**. The Beacon performs a read-only request scoped to the selected subscription and returns only its resource-group count:
 
 ```text
 az group list --subscription <subscription-id> --query length(@) --output tsv
@@ -28,7 +28,7 @@ If the identity has narrower resource-level access but cannot list resource grou
 
 ## 5. Discover, test, and apply the first rule
 
-Open **Discover Azure signals** from Rule Studio. Browse the Log Analytics workspaces/tables or ARM resources/metric definitions the identity can read, or start with a Resource Graph template. Define what should return a finding, choose **Test without saving**, inspect the live result, and then select **Save tested rule**. Editing or renaming any field invalidates the test and requires another test before saving.
+Select **Add a check**. The source page shows all six signal surfaces with nothing preselected. Choose one, use its resource/workspace/metric discovery controls where relevant, define what should return a finding, choose **Test without saving**, inspect the live result, and then select **Save and enable**. Editing or renaming any field invalidates the test and requires another test before saving.
 
 Discovery reads metadata only and does not save it. KQL result rows remain in memory for the current evaluation and never enter the configuration or a rule-pack export.
 

@@ -19,6 +19,9 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: "10.0.x"
       - name: Install dependencies
         run: python -m pip install -r requirements-dev.txt
       - name: Verify version
@@ -36,12 +39,19 @@ jobs:
       - name: Build application
         shell: pwsh
         run: |
-          python -m PyInstaller --noconfirm --clean --onefile --windowed `
-            --name AzureHealthBeacon `
+          $Version = $env:GITHUB_REF_NAME.TrimStart('v')
+          python -m PyInstaller --noconfirm --clean --onefile --console `
+            --name AzureHealthBeaconCore `
             --icon assets/AzureHealthBeacon.ico `
-            --add-data "assets/AzureHealthBeacon.ico;assets" `
             --version-file build/version_info.txt `
-            --paths src launcher.py
+            --paths src core_launcher.py
+          dotnet publish src/windows/AzureHealthBeacon.Shell/AzureHealthBeacon.Shell.csproj `
+            -c Release -r win-x64 --self-contained true -o build/windows-shell `
+            "/p:Version=$Version" "/p:AssemblyVersion=$Version.0" "/p:FileVersion=$Version.0"
+          Copy-Item -LiteralPath build/windows-shell/AzureHealthBeacon.exe -Destination dist/AzureHealthBeacon.exe
+      - name: Exercise first use and no-preselection rule flow
+        shell: pwsh
+        run: scripts/test_windows_shell.ps1 -ShellPath dist/AzureHealthBeacon.exe -CorePath dist/AzureHealthBeaconCore.exe
       - name: Install verified Inno Setup compiler
         shell: pwsh
         run: |
@@ -67,15 +77,36 @@ jobs:
           $Asset = "dist\AzureHealthBeacon-Setup-$env:GITHUB_REF_NAME.exe"
           $Hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $Asset).Hash.ToLowerInvariant()
           "$Hash *$([IO.Path]::GetFileName($Asset))" | Set-Content -Encoding ascii "$Asset.sha256"
-      - name: Verify restart from an inherited PyInstaller runtime
+      - name: Verify 0.6.0 in-place upgrade and contaminated restart
         shell: pwsh
         run: |
           $Version = $env:GITHUB_REF_NAME.TrimStart('v')
           $Asset = Join-Path $env:GITHUB_WORKSPACE "dist\AzureHealthBeacon-Setup-$env:GITHUB_REF_NAME.exe"
           $InstallDir = Join-Path $env:RUNNER_TEMP 'beacon-restart-test'
           $InstallExe = Join-Path $InstallDir 'AzureHealthBeacon.exe'
+          $CoreExe = Join-Path $InstallDir 'AzureHealthBeaconCore.exe'
           $StaleRuntime = Join-Path $env:RUNNER_TEMP '_MEI-stale-runtime'
           New-Item -ItemType Directory -Path $StaleRuntime -Force | Out-Null
+
+          # Install the currently public Python-front-end release first. The
+          # new installer must replace it in place without a second wizard or
+          # data migration step.
+          $PreviousDir = Join-Path $env:RUNNER_TEMP 'beacon-v060'
+          New-Item -ItemType Directory -Path $PreviousDir -Force | Out-Null
+          $PreviousInstaller = Join-Path $PreviousDir 'AzureHealthBeacon-Setup-v0.6.0.exe'
+          $PreviousChecksum = "$PreviousInstaller.sha256"
+          Invoke-WebRequest -Uri 'https://github.com/Anders0lesen/azure-extensible-systray-monitor/releases/download/v0.6.0/AzureHealthBeacon-Setup-v0.6.0.exe' -OutFile $PreviousInstaller
+          Invoke-WebRequest -Uri 'https://github.com/Anders0lesen/azure-extensible-systray-monitor/releases/download/v0.6.0/AzureHealthBeacon-Setup-v0.6.0.exe.sha256' -OutFile $PreviousChecksum
+          $ExpectedPrevious = ((Get-Content -LiteralPath $PreviousChecksum -Raw) -split '\s+')[0].ToLowerInvariant()
+          $ActualPrevious = (Get-FileHash -LiteralPath $PreviousInstaller -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($ActualPrevious -ne $ExpectedPrevious) { throw 'The downloaded 0.6.0 installer checksum did not match.' }
+          $OldSetup = Start-Process -FilePath $PreviousInstaller -ArgumentList @(
+            '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/DIR=$InstallDir"
+          ) -Wait -PassThru
+          if ($OldSetup.ExitCode -ne 0) { throw "The 0.6.0 setup failed: $($OldSetup.ExitCode)" }
+          Start-Sleep -Seconds 5
+          $OldVersion = (Get-Item -LiteralPath $InstallExe).VersionInfo.ProductVersion.Trim()
+          if ($OldVersion -ne '0.6.0') { throw "Expected 0.6.0 before upgrade, found $OldVersion." }
 
           # Reproduce the environment inherited when an older onefile build
           # starts Setup, exits, and deletes its temporary Python runtime.
@@ -110,11 +141,17 @@ jobs:
           if (-not $Running) {
             throw 'The installed Beacon did not survive the contaminated _MEI restart.'
           }
+          if (-not (Test-Path -LiteralPath $CoreExe)) {
+            throw 'The private monitoring engine was not installed.'
+          }
           $InstalledVersion = (Get-Item -LiteralPath $InstallExe).VersionInfo.ProductVersion.Trim()
           if ($InstalledVersion -ne $Version) {
             throw "Restarted version $InstalledVersion did not match $Version."
           }
           $Running | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
+          Get-CimInstance Win32_Process | Where-Object {
+            $_.Name -eq 'AzureHealthBeaconCore.exe' -and $_.ExecutablePath -eq $CoreExe
+          } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
       - name: Attest installer provenance
         uses: actions/attest@v4
         with:

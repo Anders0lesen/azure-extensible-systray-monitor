@@ -2,9 +2,9 @@
 
 ## Recommendation
 
-Use **WinUI 3 for the Windows 11 shell** and retain Python for the tested Azure/rule engine. Microsoft identifies WinUI 3 as its recommended native framework for new Windows desktop applications. It provides the strongest fit for Windows windowing, accessibility, high-DPI rendering, notifications, startup integration, and the notification area.
+Use a **self-contained WPF/.NET shell for Windows 11** and retain Python for the tested Azure/rule engine. The integration spike found no installed WinUI/MSVC workload on the release-development machine, while WPF provides the required native windowing, accessibility, high-DPI rendering, startup integration, and notification-area support with a smaller toolchain risk.
 
-Flutter remains the fallback if the spike reveals a material WinUI limitation or if cross-platform UI becomes an active requirement again. The framework choice is not allowed to change rule-pack compatibility, credential isolation, the 14-day deletion boundary, or tray-state semantics.
+Cross-platform UI work remains out of scope unless it is explicitly reopened. The framework choice is not allowed to change rule-pack compatibility, credential isolation, the 14-day deletion boundary, or tray-state semantics.
 
 ## Product structure
 
@@ -53,18 +53,18 @@ Creating a check is a deliberate three-stage workflow:
 The migration must not begin as a rewrite of working Azure behavior.
 
 ```text
-WinUI 3 shell
-  -> narrow local application API
+WPF/.NET shell
+  -> redirected stdin/stdout JSON-lines API to one private child process
       -> existing Python credential, rule, discovery, and check services
           -> app-isolated Azure CLI profile
 ```
 
 - The UI sends typed operations such as `list_rules`, `test_rule`, and `check_now`; it never sends executable command lines.
 - The Python service owns configuration validation, Azure calls, redaction, credential expiry, and update verification.
-- Local communication must use a current-user-only named pipe or equivalent authenticated local transport.
+- Local communication uses inherited anonymous process pipes. The engine opens no listening socket and accepts only fixed named data operations.
 - Tokens, passwords, Azure CLI cache files, and raw credential objects never cross the UI boundary.
 - Existing schema-6 configuration and schema-4 rule packs remain compatible.
-- The Tk interface stays buildable until the WinUI replacement passes feature parity and updater rollback testing.
+- The legacy Tk entry point remains in source as a short-term rollback aid, but v0.7.0 ships the WPF shell and private engine.
 
 ## Tabler icon policy
 
@@ -79,8 +79,8 @@ The initial curated set and product mapping are documented in `assets/icons/tabl
 
 ## Delivery slices
 
-1. **Windows integration spike** — prove WinUI windowing, tray animation, single instance, notifications, startup, dark/light mode, SVG rendering, and updater handoff in an isolated prototype.
-2. **Core extraction** — separate Tk concerns from the existing Python services without changing behaviour or configuration.
+1. **Windows integration spike** — prove WPF windowing, tray animation, single instance, notifications, startup, dark/light mode, compiled SVG paths, and updater handoff in an isolated prototype.
+2. **Core extraction** — separate legacy Tk concerns from the existing Python services without changing behaviour or configuration.
 3. **Shell and onboarding** — implement navigation, first use, sign-in, credential testing, and credential deletion.
 4. **Checks experience** — implement the no-preselection source chooser, per-source configuration, live testing, editing, renaming, and rule-pack lifecycle.
 5. **Operational surfaces** — implement overview, failed-item details, activity, settings, update status, About, and GitHub link.

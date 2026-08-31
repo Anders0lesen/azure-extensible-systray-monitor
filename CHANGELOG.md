@@ -2,6 +2,27 @@
 
 This project uses [Semantic Versioning](https://semver.org/). Changes are grouped by release so each GitHub tag has a short, human-readable scope.
 
+## [0.7.0] - 2026-08-31
+
+### Added
+
+- A modern, self-contained Windows 11 shell with dark-first navigation, light mode, Overview, Checks, Activity, Settings, and About pages.
+- A deliberate three-stage check workflow: choose one of six unselected signal sources, configure only relevant fields, then live-test before saving.
+- Source-specific Azure resource, workspace, and metric discovery directly inside rule configuration.
+- A proper KQL editing surface for Resource Graph and Logs/Application Insights checks.
+- Accessible navigation names and a Windows UI regression that verifies first use, all six sources, no preselection, and the test-before-save controls.
+
+### Changed
+
+- The tested Python Azure/rule engine now runs as a private child process behind a fixed data-only command boundary; no credentials or tokens cross into UI state.
+- The installer ships the modern shell and private engine separately while preserving schema-6 configuration, schema-4 rule packs, the install location, and in-place updates.
+- Tabler SVG paths are compiled into the shell and require no runtime web access. Operational tray icons remain status-only.
+
+### Fixed
+
+- Update checks in notify/automatic mode are limited to once per day and the successful manual state reads “✅ Full up-to-date - No new updates available”.
+- Tray animation now releases native icon handles instead of leaking them during long-running sessions.
+
 ## [0.6.0] - 2026-08-31
 
 ### Added
@@ -89,3 +110,4 @@ First public preview.
 [0.4.0]: https://github.com/Anders0lesen/azure-extensible-systray-monitor/releases/tag/v0.4.0
 [0.5.0]: https://github.com/Anders0lesen/azure-extensible-systray-monitor/releases/tag/v0.5.0
 [0.6.0]: https://github.com/Anders0lesen/azure-extensible-systray-monitor/releases/tag/v0.6.0
+[0.7.0]: https://github.com/Anders0lesen/azure-extensible-systray-monitor/releases/tag/v0.7.0
