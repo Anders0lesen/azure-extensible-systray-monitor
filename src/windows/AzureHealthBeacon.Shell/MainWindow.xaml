@@ -1,0 +1,42 @@
+<Window x:Class="AzureHealthBeacon.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:local="clr-namespace:AzureHealthBeacon"
+        Title="Azure Health Beacon" Width="1180" Height="780" MinWidth="920" MinHeight="640"
+        WindowStartupLocation="CenterScreen" Closing="Window_Closing"
+        Background="{DynamicResource WindowBrush}" Foreground="{DynamicResource TextBrush}">
+  <Grid Background="{DynamicResource WindowBrush}">
+    <Grid.ColumnDefinitions><ColumnDefinition Width="230"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+    <Border Grid.Column="0" Background="{DynamicResource PanelBrush}" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="0,0,1,0">
+      <DockPanel Margin="18">
+        <StackPanel DockPanel.Dock="Top">
+          <StackPanel Orientation="Horizontal" Margin="2,4,0,28">
+            <Image Source="pack://application:,,,/Assets/AzureHealthBeacon-Brand-Square.png" Width="38" Height="38" Stretch="UniformToFill" />
+            <StackPanel Margin="10,0,0,0" VerticalAlignment="Center">
+              <TextBlock Text="Azure Health" FontWeight="SemiBold" FontSize="15" />
+              <TextBlock Text="Beacon" Foreground="{DynamicResource MutedBrush}" FontSize="13" />
+            </StackPanel>
+          </StackPanel>
+          <Button x:Name="OverviewNav" AutomationProperties.Name="Overview" Style="{StaticResource NavButton}" Click="Overview_Click"><StackPanel Orientation="Horizontal"><local:TablerIcon Icon="activity" Width="20" Height="20" Stroke="{DynamicResource MutedBrush}"/><TextBlock Text="Overview" Margin="12,0"/></StackPanel></Button>
+          <Button x:Name="ChecksNav" AutomationProperties.Name="Checks" Style="{StaticResource NavButton}" Click="Checks_Click"><StackPanel Orientation="Horizontal"><local:TablerIcon Icon="progress-check" Width="20" Height="20" Stroke="{DynamicResource MutedBrush}"/><TextBlock Text="Checks" Margin="12,0"/></StackPanel></Button>
+          <Button x:Name="ActivityNav" AutomationProperties.Name="Activity" Style="{StaticResource NavButton}" Click="Activity_Click"><StackPanel Orientation="Horizontal"><local:TablerIcon Icon="file-analytics" Width="20" Height="20" Stroke="{DynamicResource MutedBrush}"/><TextBlock Text="Activity" Margin="12,0"/></StackPanel></Button>
+          <Button x:Name="SettingsNav" AutomationProperties.Name="Settings" Style="{StaticResource NavButton}" Click="Settings_Click"><StackPanel Orientation="Horizontal"><local:TablerIcon Icon="settings" Width="20" Height="20" Stroke="{DynamicResource MutedBrush}"/><TextBlock Text="Settings" Margin="12,0"/></StackPanel></Button>
+          <Button x:Name="AboutNav" AutomationProperties.Name="About" Style="{StaticResource NavButton}" Click="About_Click"><StackPanel Orientation="Horizontal"><local:TablerIcon Icon="info-circle" Width="20" Height="20" Stroke="{DynamicResource MutedBrush}"/><TextBlock Text="About" Margin="12,0"/></StackPanel></Button>
+        </StackPanel>
+        <Border DockPanel.Dock="Bottom" Background="{DynamicResource CardBrush}" CornerRadius="9" Padding="12" Margin="0,12,0,0">
+          <StackPanel><TextBlock x:Name="ConnectionLabel" Text="Not connected" FontWeight="SemiBold"/><TextBlock x:Name="ConnectionDetail" Text="Azure connection required" Foreground="{DynamicResource MutedBrush}" FontSize="12" Margin="0,3,0,0"/></StackPanel>
+        </Border>
+      </DockPanel>
+    </Border>
+    <Grid Grid.Column="1">
+      <Grid.RowDefinitions><RowDefinition Height="70"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+      <Border Grid.Row="0" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="0,0,0,1" Padding="28,0">
+        <DockPanel>
+          <Button x:Name="ThemeButton" DockPanel.Dock="Right" Content="☀  Light" Padding="13,7" Margin="8,15,0,15" Click="Theme_Click" />
+          <StackPanel VerticalAlignment="Center"><TextBlock x:Name="PageTitle" Text="Overview" FontSize="21" FontWeight="SemiBold"/><TextBlock x:Name="PageSubtitle" Text="Your Azure signals at a glance" Foreground="{DynamicResource MutedBrush}" FontSize="12"/></StackPanel>
+        </DockPanel>
+      </Border>
+      <ScrollViewer Grid.Row="1" Background="{DynamicResource WindowBrush}" HorizontalScrollBarVisibility="Disabled"><ContentControl x:Name="ContentHost" Margin="30,26" HorizontalContentAlignment="Stretch" /></ScrollViewer>
+    </Grid>
+  </Grid>
+</Window>

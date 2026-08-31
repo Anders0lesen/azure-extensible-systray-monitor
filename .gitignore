@@ -6,6 +6,8 @@ __pycache__/
 build/
 dist/
 *.spec
+**/bin/
+**/obj/
 
 # Local app state and logs
 checks.json

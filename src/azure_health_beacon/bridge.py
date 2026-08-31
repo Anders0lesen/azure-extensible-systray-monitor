@@ -6,6 +6,7 @@ import logging
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict
+from datetime import UTC, datetime
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Any
@@ -391,6 +392,9 @@ class Bridge:
     @staticmethod
     def check_update(_payload: dict[str, Any]) -> dict[str, object]:
         release = fetch_latest_release()
+        config = load_config()
+        config.last_update_check_utc = datetime.now(UTC).isoformat()
+        save_config(config)
         return {
             "version": release.version,
             "html_url": release.html_url,

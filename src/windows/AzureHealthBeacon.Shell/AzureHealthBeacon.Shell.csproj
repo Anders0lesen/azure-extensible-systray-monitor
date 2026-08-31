@@ -1,0 +1,28 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <UseWindowsForms>true</UseWindowsForms>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <AssemblyName>AzureHealthBeacon</AssemblyName>
+    <RootNamespace>AzureHealthBeacon</RootNamespace>
+    <ApplicationIcon>..\..\..\assets\AzureHealthBeacon.ico</ApplicationIcon>
+    <Version>0.7.0</Version>
+    <AssemblyVersion>0.7.0.0</AssemblyVersion>
+    <FileVersion>0.7.0.0</FileVersion>
+    <Product>Azure Health Beacon</Product>
+    <Company>Anders Olesen</Company>
+    <Description>Private, extensible Azure signal monitor for Windows 11</Description>
+    <PublishSingleFile>true</PublishSingleFile>
+    <SelfContained>true</SelfContained>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <DebugType>none</DebugType>
+    <DebugSymbols>false</DebugSymbols>
+  </PropertyGroup>
+  <ItemGroup>
+    <Resource Include="..\..\..\assets\AzureHealthBeacon-Brand-Square.png" Link="Assets\AzureHealthBeacon-Brand-Square.png" />
+  </ItemGroup>
+</Project>
