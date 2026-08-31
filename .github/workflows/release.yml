@@ -84,10 +84,21 @@ jobs:
           $env:_PYI_PARENT_PROCESS_LEVEL = '2'
           Remove-Item Env:PYINSTALLER_RESET_ENVIRONMENT -ErrorAction SilentlyContinue
 
-          $Setup = Start-Process -FilePath $Asset -ArgumentList @(
+          $StartInfo = [Diagnostics.ProcessStartInfo]::new()
+          $StartInfo.FileName = $Asset
+          $StartInfo.UseShellExecute = $false
+          $StartInfo.CreateNoWindow = $true
+          foreach ($Argument in @(
             '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/CLOSEAPPLICATIONS',
             '/RESTARTAPPLICATIONS', "/DIR=$InstallDir"
-          ) -Wait -PassThru -WindowStyle Hidden
+          )) {
+            $StartInfo.ArgumentList.Add($Argument)
+          }
+          $Setup = [Diagnostics.Process]::Start($StartInfo)
+          if (-not $Setup.WaitForExit(120000)) {
+            $Setup.Kill($true)
+            throw 'Restart-test installer did not exit within two minutes.'
+          }
           if ($Setup.ExitCode -ne 0) {
             throw "Restart-test installer failed with exit code $($Setup.ExitCode)."
           }
