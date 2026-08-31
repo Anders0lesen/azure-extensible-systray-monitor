@@ -9,10 +9,16 @@ $CorePath = (Resolve-Path -LiteralPath $CorePath).Path
 Add-Type -AssemblyName UIAutomationClient
 
 function Stop-TestProcesses([Diagnostics.Process]$Shell) {
-    if (-not $Shell.HasExited) { Stop-Process -Id $Shell.Id -Force }
+    if (-not $Shell.HasExited) {
+        Stop-Process -Id $Shell.Id -Force -ErrorAction SilentlyContinue
+    }
     Get-CimInstance Win32_Process | Where-Object {
         $_.Name -eq 'AzureHealthBeaconCore.exe' -and $_.ExecutablePath -eq $CorePath
-    } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
+    } | ForEach-Object {
+        # A PyInstaller parent and worker can both match; stopping either may
+        # make the other exit before this snapshot is consumed.
+        Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
+    }
 }
 
 function Start-TestShell([string]$LocalData) {
