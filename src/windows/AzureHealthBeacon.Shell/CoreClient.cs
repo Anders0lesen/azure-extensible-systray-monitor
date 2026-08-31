@@ -33,6 +33,8 @@ public sealed class CoreClient : IDisposable
             WorkingDirectory = AppContext.BaseDirectory,
         };
         _process = Process.Start(start) ?? throw new InvalidOperationException("The monitoring engine did not start.");
+        _process.ErrorDataReceived += (_, _) => { };
+        _process.BeginErrorReadLine();
         var pong = await CallAsync("ping");
         if (pong["version"] is null)
             throw new InvalidOperationException("The monitoring engine returned an invalid startup response.");

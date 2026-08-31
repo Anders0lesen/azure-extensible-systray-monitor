@@ -29,6 +29,8 @@ Use GitHub private vulnerability reporting/security advisories. If unavailable, 
 
 The Beacon launches Microsoft Azure CLI's interactive login using an isolated `AZURE_CONFIG_DIR` under its own local app-data directory. Microsoft sign-in/WAM handles passwords, Windows Hello, Conditional Access, and MFA. The Beacon receives success/failure and non-secret subscription metadata, not the password or MFA response.
 
+The Windows shell starts one private monitoring-engine child process with redirected anonymous stdin/stdout pipes. The bridge accepts only fixed application commands and data-only JSON. It has no listener, executable-command field, token-return operation, or raw credential response. Unexpected errors are redacted before they cross into the shell.
+
 For an MSI Azure CLI installation, the Beacon invokes the Azure CLI Python module directly from `Program Files`. Imported rule values never pass through `cmd.exe`.
 
 ## Fourteen-day hard boundary

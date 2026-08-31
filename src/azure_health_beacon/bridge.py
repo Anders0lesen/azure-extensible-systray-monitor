@@ -397,7 +397,7 @@ class Bridge:
         save_config(config)
         return {
             "version": release.version,
-            "html_url": release.html_url,
+            "html_url": release.page_url,
             "installer_name": release.installer_name,
             "is_newer": is_newer_version(release.version, __version__),
         }

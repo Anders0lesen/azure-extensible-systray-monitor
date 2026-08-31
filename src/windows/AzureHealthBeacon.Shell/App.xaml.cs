@@ -50,4 +50,9 @@ public partial class App : System.Windows.Application
         Core?.Dispose();
         _mutex?.Dispose();
     }
+
+    private void Application_SessionEnding(object sender, SessionEndingCancelEventArgs e)
+    {
+        (MainWindow as MainWindow)?.PrepareForSystemShutdown();
+    }
 }

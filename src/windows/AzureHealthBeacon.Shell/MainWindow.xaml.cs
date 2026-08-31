@@ -390,7 +390,8 @@ public partial class MainWindow : Window
             save.IsEnabled = false;
             try
             {
-                await _core.CallAsync("save_rule", new JsonObject { ["rule"] = testedDraft.DeepClone() });
+                var currentDraft = BuildDraft(name.Text, enabled.IsChecked == true, fields);
+                await _core.CallAsync("save_rule", new JsonObject { ["rule"] = currentDraft });
                 await RefreshSnapshotAsync(); ShowChecks();
             }
             catch (Exception error) { ShowError(error); save.IsEnabled = true; }
@@ -402,7 +403,8 @@ public partial class MainWindow : Window
             var draft = _editingRule?.DeepClone().AsObject() ?? new JsonObject();
             draft["id"] = Text(draft["id"], Guid.NewGuid().ToString()); draft["name"] = ruleName.Trim(); draft["kind"] = _selectedSource; draft["enabled"] = isEnabled;
             draft["resource_id"] = ControlText(controls, "resource_id"); draft["portal_url"] = Text(draft["portal_url"]); draft["tenant_id"] = Text(draft["tenant_id"]);
-            draft["expected_values"] = new JsonArray(ControlText(controls, "expected_values", _selectedSource == "azure_resource_graph" ? "" : "Succeeded").Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).Select(value => JsonValue.Create(value)).ToArray());
+            var querySource = _selectedSource is "azure_resource_graph" or "azure_log_analytics";
+            draft["expected_values"] = new JsonArray(ControlText(controls, "expected_values", querySource ? "" : "Succeeded").Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).Select(value => JsonValue.Create(value)).ToArray());
             draft["query"] = ControlText(controls, "query"); draft["scope"] = _selectedSource == "azure_resource_graph" ? "all_accessible" : _selectedSource == "azure_log_analytics" ? "workspace" : "resource";
             draft["workspace_id"] = ControlText(controls, "workspace_id"); draft["lookback_minutes"] = ParseInt(ControlText(controls, "lookback_minutes", "5"), 5);
             draft["metric_name"] = ControlText(controls, "metric_name"); draft["metric_namespace"] = ControlText(controls, "metric_namespace"); draft["metric_aggregation"] = ControlText(controls, "metric_aggregation", "Average");
@@ -494,6 +496,25 @@ public partial class MainWindow : Window
         var interval = Field(body, "Check interval in minutes", Text(settings["interval_minutes"], "5"));
         var timeout = Field(body, "Per-attempt timeout in seconds", Text(settings["timeout_seconds"], "30"));
         var retries = Field(body, "Retry count", Text(settings["retry_count"], "2"));
+        body.Children.Add(SectionTitle("Azure connection"));
+        body.Children.Add(Muted("Deleting the connection removes the complete app-isolated Azure CLI profile and subscription binding. Rules are retained."));
+        var deleteConnection = Secondary("Delete Azure connection…");
+        deleteConnection.Margin = new Thickness(0, 8, 0, 0);
+        deleteConnection.Click += async (_, _) =>
+        {
+            if (System.Windows.MessageBox.Show("Delete all authorization state owned by Azure Health Beacon? Your rules will be retained.", "Delete Azure connection", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes) return;
+            try
+            {
+                await _core.CallAsync("delete_connection");
+                await RefreshSnapshotAsync();
+                UpdateConnectionSummary();
+                ResetCheckTimer();
+                SetState(BeaconState.Unconnectable);
+                ShowOnboarding();
+            }
+            catch (Exception error) { ShowError(error); }
+        };
+        body.Children.Add(deleteConnection);
         body.Children.Add(SectionTitle("Updates"));
         var manual = new RadioButton { Content = "Manual only", GroupName = "Updates", IsChecked = Text(settings["update_mode"], "manual") == "manual", Margin = new Thickness(0, 5, 0, 3) };
         var notify = new RadioButton { Content = "Notify me when an update is available", GroupName = "Updates", IsChecked = Text(settings["update_mode"]) == "notify", Margin = new Thickness(0, 5, 0, 3) };
@@ -507,6 +528,9 @@ public partial class MainWindow : Window
         {
             try
             {
+                if (automatic.IsChecked == true && Text(settings["update_mode"], "manual") != "automatic"
+                    && System.Windows.MessageBox.Show("Install future verified releases automatically and restart the Beacon when needed?", "Enable automatic updates", MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes)
+                    return;
                 StartupRegistry.SetEnabled(startup.IsChecked == true);
                 var response = await _core.CallAsync("update_settings", new JsonObject
                 {
@@ -538,7 +562,7 @@ public partial class MainWindow : Window
         try
         {
             var update = await _core.CallAsync("check_update");
-            if (!Bool(update["is_newer"])) { status.Text = "✅ Fully up to date — no new updates available"; return; }
+            if (!Bool(update["is_newer"])) { status.Text = "✅ Full up-to-date - No new updates available"; return; }
             status.Text = $"Version {Text(update["version"])} is available.";
             if (System.Windows.MessageBox.Show($"Update Azure Health Beacon to {Text(update["version"])} now?", "Update available", MessageBoxButton.YesNo, MessageBoxImage.Information) == MessageBoxResult.Yes)
                 await InstallUpdateAsync();
@@ -631,6 +655,7 @@ public partial class MainWindow : Window
     private async void Theme_Click(object sender, RoutedEventArgs e) { _dark=!_dark; ApplyTheme(); try { var s=_snapshot["settings"]?.AsObject() ?? new JsonObject(); s["theme_mode"]=_dark?"dark":"light"; _snapshot["settings"]=await _core.CallAsync("update_settings", s.DeepClone().AsObject()); } catch { } }
     private void Window_Closing(object? sender, System.ComponentModel.CancelEventArgs e) { if (!_allowClose) { e.Cancel=true; Hide(); } }
     public void ExitApplication() { _allowClose=true; System.Windows.Application.Current.Shutdown(); }
+    public void PrepareForSystemShutdown() => _allowClose = true;
 
     private sealed record SubscriptionChoice(string Name, string Id, string TenantId);
 }

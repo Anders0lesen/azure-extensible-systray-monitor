@@ -44,6 +44,7 @@ from azure_health_beacon.model import (
     aggregate_state,
 )
 from azure_health_beacon.updater import (
+    ReleaseInfo,
     download_verified_installer,
     is_newer_version,
     launch_installer,
@@ -140,6 +141,32 @@ class BridgeTests(unittest.TestCase):
         encoded = json.dumps(Bridge.snapshot({})).casefold()
         for forbidden in ("password", "access_token", "refresh_token", "credential"):
             self.assertNotIn(forbidden, encoded)
+
+    @patch("azure_health_beacon.bridge.save_config")
+    @patch("azure_health_beacon.bridge.load_config")
+    @patch("azure_health_beacon.bridge.fetch_latest_release")
+    def test_update_check_records_when_the_network_was_queried(
+        self, fetch: object, load: object, save: object
+    ) -> None:
+        release = ReleaseInfo(
+            version="9.9.9",
+            tag="v9.9.9",
+            title="Test",
+            notes="",
+            page_url="https://github.com/Anders0lesen/azure-extensible-systray-monitor/releases/tag/v9.9.9",
+            installer_name="AzureHealthBeacon-Setup-v9.9.9.exe",
+            installer_url="https://github.com/example.exe",
+            installer_digest="a" * 64,
+            checksum_name="AzureHealthBeacon-Setup-v9.9.9.exe.sha256",
+            checksum_url="https://github.com/example.sha256",
+        )
+        config = AppConfig()
+        fetch.return_value = release  # type: ignore[attr-defined]
+        load.return_value = config  # type: ignore[attr-defined]
+        result = Bridge.check_update({})
+        self.assertTrue(result["is_newer"])
+        self.assertTrue(config.last_update_check_utc)
+        save.assert_called_once_with(config)  # type: ignore[attr-defined]
 
 
 class ConfigurationTests(unittest.TestCase):
@@ -698,9 +725,7 @@ class ExtensibleSignalTests(unittest.TestCase):
             property_path="properties.requiredMarker",
             property_operator="missing",
         )
-        run_az.return_value = subprocess.CompletedProcess(
-            [], 0, "", ""
-        )
+        run_az.return_value = subprocess.CompletedProcess([], 0, "", "")
         result = run_resource_property_check(definition, retry_count=0)
         self.assertEqual(result.state, CheckState.HEALTHY)
         self.assertEqual(result.observed_value, "Missing")
