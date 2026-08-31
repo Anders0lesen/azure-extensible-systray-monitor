@@ -35,7 +35,7 @@ A confirmed failure remains red during a recheck so a known incident cannot disa
 
 ## Roadmap
 
-- Replace the current Tk interface with a modern Windows desktop shell while preserving the tested rule, credential, and update boundaries behind it. Flutter and WinUI 3 will be spiked before choosing the shell; this is intentionally separate from the 0.6.0 engine release.
+- Replace the current Tk interface with a modern WinUI 3 shell while preserving the tested rule, credential, and update boundaries behind it. Complete the Windows integration spike in the [UI redesign plan](ui-redesign-plan.md) before migrating product screens.
 - Validate onboarding against a selected resource for narrow RBAC identities.
 - Add compound named-signal rules with temporal AND/OR correlation across adapters.
 - Add Authenticode code signing; the release pipeline and provenance attestation are in place, but the public-preview binaries remain unsigned.

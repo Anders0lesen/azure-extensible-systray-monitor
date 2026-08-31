@@ -149,4 +149,4 @@ Both **Start Azure Health Beacon when I sign in to Windows** and **Start minimiz
 - The application can delete everything it owns, but it cannot securely erase an account retained by Windows WAM without modifying system-wide account state.
 - A compromised Windows user session can act with that user's permissions; no desktop app can make that scenario impossible.
 
-See [Architecture](docs/architecture.md) for extension boundaries and roadmap.
+See [Architecture](docs/architecture.md) for extension boundaries and roadmap, and the [UI redesign plan](docs/ui-redesign-plan.md) for the modern Windows shell and no-preselection check workflow.
