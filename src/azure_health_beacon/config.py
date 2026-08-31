@@ -15,9 +15,9 @@ from urllib.parse import unquote, urlparse
 from .model import CheckDefinition
 
 APP_NAME = "AzureHealthBeacon"
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 RULE_PACK_FORMAT = "azure-health-beacon-rule-pack"
-RULE_PACK_SCHEMA_VERSION = 3
+RULE_PACK_SCHEMA_VERSION = 4
 MAX_RULE_PACK_BYTES = 1_000_000
 MAX_RULES_PER_PACK = 500
 AUTHORIZATION_MAX_AGE = timedelta(days=14)
@@ -42,6 +42,8 @@ CHECK_KEYS = {
     "metric_operator",
     "metric_threshold",
     "metric_filter",
+    "property_path",
+    "property_operator",
 }
 
 
@@ -144,6 +146,8 @@ def _definition_from_dict(raw: dict[str, Any]) -> CheckDefinition:
         metric_operator=str(raw.get("metric_operator", "gt")).strip(),
         metric_threshold=float(raw.get("metric_threshold", 0)),
         metric_filter=str(raw.get("metric_filter", "")).strip(),
+        property_path=str(raw.get("property_path", "")).strip(),
+        property_operator=str(raw.get("property_operator", "equals_any")).strip(),
     )
     validate_definition(definition)
     return definition
@@ -156,7 +160,7 @@ def load_config(path: Path | None = None) -> AppConfig:
     raw = json.loads(target.read_text(encoding="utf-8"))
     _reject_sensitive_keys(raw)
     loaded_schema = int(raw.get("schema_version", 0))
-    if loaded_schema not in (1, 2, 3, 4, SCHEMA_VERSION):
+    if loaded_schema not in (1, 2, 3, 4, 5, SCHEMA_VERSION):
         raise ValueError(
             f"Unsupported configuration schema: {raw.get('schema_version')}"
         )
@@ -282,6 +286,8 @@ def clear_connection_metadata(config: AppConfig) -> None:
 def validate_definition(definition: CheckDefinition) -> None:
     supported = {
         "azure_resource_provisioning",
+        "azure_resource_property",
+        "azure_vm_power_state",
         "azure_resource_graph",
         "azure_log_analytics",
         "azure_monitor_metric",
@@ -370,6 +376,63 @@ def validate_definition(definition: CheckDefinition) -> None:
         _validate_portal_url(definition.portal_url)
         _reject_secret_like_text(asdict(definition), "check")
         return
+    if definition.kind == "azure_resource_property":
+        if not is_valid_resource_id(definition.resource_id):
+            raise ValueError("Select a complete Azure resource ID")
+        if not re.fullmatch(
+            r"[A-Za-z_][A-Za-z0-9_-]*(?:\.[A-Za-z_][A-Za-z0-9_-]*|\[\d+\])*",
+            definition.property_path,
+        ):
+            raise ValueError(
+                "Enter a property path such as properties.provisioningState"
+            )
+        if len(definition.property_path) > 512:
+            raise ValueError("Property path is unexpectedly long")
+        if definition.property_operator not in {
+            "equals_any",
+            "not_equals_any",
+            "contains",
+            "not_contains",
+            "greater_than",
+            "less_than",
+            "exists",
+            "missing",
+        }:
+            raise ValueError("Unsupported property comparison")
+        if (
+            definition.property_operator not in {"exists", "missing"}
+            and not definition.expected_values
+        ):
+            raise ValueError("Enter at least one comparison value")
+        if definition.property_operator in {"greater_than", "less_than"}:
+            try:
+                threshold = float(definition.expected_values[0])
+            except (IndexError, ValueError) as error:
+                raise ValueError("Enter one numeric comparison value") from error
+            if not math.isfinite(threshold):
+                raise ValueError("Property comparison must be a finite number")
+        if len(definition.expected_values) > 20 or any(
+            len(value) > 500 for value in definition.expected_values
+        ):
+            raise ValueError("Too many or overly long property values")
+        _validate_resource_rule_text(definition)
+        return
+    if definition.kind == "azure_vm_power_state":
+        if not is_valid_resource_id(definition.resource_id) or not re.search(
+            r"/providers/Microsoft\.Compute/virtualMachines/[^/]+$",
+            definition.resource_id,
+            re.IGNORECASE,
+        ):
+            raise ValueError("Select a complete Azure virtual-machine resource ID")
+        if not definition.expected_values:
+            raise ValueError("Select at least one healthy VM power state")
+        if len(definition.expected_values) > 10 or any(
+            not re.fullmatch(r"PowerState/[A-Za-z]+", value)
+            for value in definition.expected_values
+        ):
+            raise ValueError("VM power states must use the PowerState/name format")
+        _validate_resource_rule_text(definition)
+        return
     if not is_valid_resource_id(definition.resource_id):
         raise ValueError(
             "Enter a complete Azure resource ID or Azure Portal resource URL"
@@ -388,6 +451,24 @@ def validate_definition(definition: CheckDefinition) -> None:
         definition.name,
         definition.resource_id,
         definition.tenant_id,
+        *definition.expected_values,
+    ]
+    if any(any(ord(character) < 32 for character in value) for value in text_values):
+        raise ValueError("Check definitions cannot contain control characters")
+    _validate_portal_url(definition.portal_url)
+    _reject_secret_like_text(asdict(definition), "check")
+
+
+def _validate_resource_rule_text(definition: CheckDefinition) -> None:
+    if len(definition.resource_id) > 2048:
+        raise ValueError("Resource ID is unexpectedly long")
+    if len(definition.portal_url) > 4096 or len(definition.tenant_id) > 256:
+        raise ValueError("Portal URL or tenant value is unexpectedly long")
+    text_values = [
+        definition.name,
+        definition.resource_id,
+        definition.tenant_id,
+        definition.property_path,
         *definition.expected_values,
     ]
     if any(any(ord(character) < 32 for character in value) for value in text_values):
@@ -508,7 +589,12 @@ def import_rule_pack(path: Path) -> list[CheckDefinition]:
     _reject_secret_like_text(raw, "rule_pack")
     if raw.get("format") != RULE_PACK_FORMAT:
         raise ValueError("This is not an Azure Health Beacon rule pack")
-    if int(raw.get("schema_version", 0)) not in (1, 2, RULE_PACK_SCHEMA_VERSION):
+    if int(raw.get("schema_version", 0)) not in (
+        1,
+        2,
+        3,
+        RULE_PACK_SCHEMA_VERSION,
+    ):
         raise ValueError("Unsupported rule-pack schema")
     items = raw.get("checks")
     if not isinstance(items, list) or not items:

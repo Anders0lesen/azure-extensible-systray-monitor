@@ -14,8 +14,18 @@ class SignalSource:
 SIGNAL_SOURCES = (
     SignalSource(
         "azure_resource_provisioning",
-        "Resource property",
-        "Read one resource's provisioning state.",
+        "Provisioning state",
+        "Confirm that one Azure resource finished provisioning successfully.",
+    ),
+    SignalSource(
+        "azure_vm_power_state",
+        "VM power state",
+        "Confirm that one Azure virtual machine is in an expected live power state.",
+    ),
+    SignalSource(
+        "azure_resource_property",
+        "Resource property (advanced)",
+        "Read and compare a chosen property from one Azure Resource Manager document.",
     ),
     SignalSource(
         "azure_resource_graph",
@@ -95,5 +105,26 @@ METRIC_REDUCERS = {
     "total": "Sum of values",
 }
 
+PROPERTY_OPERATORS = {
+    "equals_any": "Equals any healthy value",
+    "not_equals_any": "Does not equal any value",
+    "contains": "Contains text",
+    "not_contains": "Does not contain text",
+    "greater_than": "Is greater than",
+    "less_than": "Is less than",
+    "exists": "Exists",
+    "missing": "Is missing",
+}
+
+VM_POWER_STATES = (
+    "PowerState/running",
+    "PowerState/stopped",
+    "PowerState/deallocated",
+    "PowerState/starting",
+    "PowerState/stopping",
+    "PowerState/deallocating",
+)
+
 METRIC_OPERATOR_BY_LABEL = {label: key for key, label in METRIC_OPERATORS.items()}
 METRIC_REDUCER_BY_LABEL = {label: key for key, label in METRIC_REDUCERS.items()}
+PROPERTY_OPERATOR_BY_LABEL = {label: key for key, label in PROPERTY_OPERATORS.items()}

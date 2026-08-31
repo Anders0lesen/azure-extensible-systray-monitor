@@ -40,6 +40,8 @@ class CheckDefinition:
     metric_operator: str = "gt"
     metric_threshold: float = 0.0
     metric_filter: str = ""
+    property_path: str = ""
+    property_operator: str = "equals_any"
 
     @property
     def subscription_id(self) -> str:

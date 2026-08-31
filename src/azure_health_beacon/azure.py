@@ -23,6 +23,7 @@ RESOURCE_GRAPH_URL = (
 )
 RESOURCE_GRAPH_BATCH_SIZE = 1000
 MAX_FINDINGS_TO_DISPLAY = 25
+_MISSING = object()
 
 
 @dataclass(frozen=True, slots=True)
@@ -436,20 +437,12 @@ def _portal_url(definition: CheckDefinition) -> str:
     )
 
 
-def run_provisioning_check(
-    definition: CheckDefinition, *, timeout_seconds: int = 30, retry_count: int = 2
-) -> CheckResult:
-    portal_url = _portal_url(definition)
-    if not _azure_cli_command():
-        return CheckResult(
-            definition.id,
-            definition.name,
-            CheckState.UNCONNECTABLE,
-            "A trusted machine-wide Azure CLI installation was not found.",
-            portal_url=portal_url,
-        )
-
-    if definition.tenant_id:
+def _verify_resource_tenant(
+    definition: CheckDefinition, timeout_seconds: int
+) -> str:
+    if not definition.tenant_id:
+        return ""
+    try:
         tenant_result = _run_az(
             [
                 "account",
@@ -464,26 +457,44 @@ def run_provisioning_check(
             ],
             timeout_seconds,
         )
-        if tenant_result.returncode != 0:
-            return CheckResult(
-                definition.id,
-                definition.name,
-                CheckState.UNCONNECTABLE,
-                _redact(
-                    tenant_result.stderr
-                    or "Could not verify the configured Azure tenant."
-                ),
-                portal_url=portal_url,
-            )
-        actual_tenant = tenant_result.stdout.strip()
-        if actual_tenant.casefold() != definition.tenant_id.casefold():
-            return CheckResult(
-                definition.id,
-                definition.name,
-                CheckState.UNCONNECTABLE,
-                "The subscription is available, but its tenant does not match the rule's safety pin.",
-                portal_url=portal_url,
-            )
+    except subprocess.TimeoutExpired:
+        return "Azure tenant verification timed out."
+    except (FileNotFoundError, OSError) as error:
+        return _redact(str(error))
+    if tenant_result.returncode != 0:
+        return _redact(
+            tenant_result.stderr or "Could not verify the configured Azure tenant."
+        )
+    if tenant_result.stdout.strip().casefold() != definition.tenant_id.casefold():
+        return (
+            "The subscription is available, but its tenant does not match the "
+            "rule's safety pin."
+        )
+    return ""
+
+
+def run_provisioning_check(
+    definition: CheckDefinition, *, timeout_seconds: int = 30, retry_count: int = 2
+) -> CheckResult:
+    portal_url = _portal_url(definition)
+    if not _azure_cli_command():
+        return CheckResult(
+            definition.id,
+            definition.name,
+            CheckState.UNCONNECTABLE,
+            "A trusted machine-wide Azure CLI installation was not found.",
+            portal_url=portal_url,
+        )
+
+    tenant_error = _verify_resource_tenant(definition, timeout_seconds)
+    if tenant_error:
+        return CheckResult(
+            definition.id,
+            definition.name,
+            CheckState.UNCONNECTABLE,
+            tenant_error,
+            portal_url=portal_url,
+        )
 
     arguments = [
         "resource",
@@ -556,6 +567,207 @@ def run_provisioning_check(
         CheckState.UNCONNECTABLE,
         last_error,
         checked_at=datetime.now().astimezone(),
+        portal_url=portal_url,
+    )
+
+
+def _render_property(value: object) -> str:
+    if value is _MISSING:
+        return "Missing"
+    if isinstance(value, bool):
+        return str(value).casefold()
+    if value is None:
+        return "null"
+    if isinstance(value, (dict, list)):
+        return json.dumps(value, sort_keys=True, separators=(",", ":"))[:500]
+    return str(value)[:500]
+
+
+def _property_is_healthy(definition: CheckDefinition, value: object) -> bool:
+    operator = definition.property_operator
+    exists = value is not _MISSING
+    if operator == "exists":
+        return exists
+    if operator == "missing":
+        return not exists
+    if not exists:
+        return False
+    rendered = _render_property(value)
+    expected = definition.expected_values
+    if operator == "equals_any":
+        return rendered.casefold() in {item.casefold() for item in expected}
+    if operator == "not_equals_any":
+        return rendered.casefold() not in {item.casefold() for item in expected}
+    if operator == "contains":
+        return any(item.casefold() in rendered.casefold() for item in expected)
+    if operator == "not_contains":
+        return all(item.casefold() not in rendered.casefold() for item in expected)
+    observed_number = float(rendered)
+    threshold = float(expected[0])
+    if operator == "greater_than":
+        return observed_number > threshold
+    return observed_number < threshold
+
+
+def run_resource_property_check(
+    definition: CheckDefinition, *, timeout_seconds: int = 30, retry_count: int = 2
+) -> CheckResult:
+    """Compare one explicitly selected property from a readable ARM document."""
+    portal_url = _portal_url(definition)
+    tenant_error = _verify_resource_tenant(definition, timeout_seconds)
+    if tenant_error:
+        return CheckResult(
+            definition.id,
+            definition.name,
+            CheckState.UNCONNECTABLE,
+            tenant_error,
+            portal_url=portal_url,
+        )
+    arguments = [
+        "resource",
+        "show",
+        "--ids",
+        definition.resource_id,
+        "--subscription",
+        definition.subscription_id,
+        "--query",
+        definition.property_path,
+        "--output",
+        "json",
+        "--only-show-errors",
+    ]
+    last_error = "Azure did not return the resource document."
+    for attempt in range(retry_count + 1):
+        try:
+            completed = _run_az(arguments, timeout_seconds)
+        except subprocess.TimeoutExpired:
+            last_error = f"Azure lookup timed out after {timeout_seconds} seconds."
+        except (FileNotFoundError, OSError) as error:
+            last_error = _redact(str(error))
+        else:
+            if completed.returncode == 0:
+                try:
+                    output = completed.stdout.strip()
+                    value = json.loads(output) if output else _MISSING
+                    healthy = _property_is_healthy(definition, value)
+                except (json.JSONDecodeError, TypeError, ValueError) as error:
+                    last_error = _redact(str(error))
+                else:
+                    observed = _render_property(value)
+                    expectation = (
+                        definition.property_operator.replace("_", " ")
+                        if not definition.expected_values
+                        else f"{definition.property_operator.replace('_', ' ')}: "
+                        + ", ".join(definition.expected_values)
+                    )
+                    return CheckResult(
+                        definition.id,
+                        definition.name,
+                        CheckState.HEALTHY if healthy else CheckState.FAILED,
+                        f"{definition.property_path} is {observed}; healthy when {expectation}.",
+                        observed_value=observed,
+                        portal_url=portal_url,
+                    )
+            else:
+                last_error = _redact(
+                    completed.stderr or completed.stdout or "Azure lookup failed."
+                )
+        if attempt < retry_count:
+            time.sleep(min(2**attempt, 4))
+    return CheckResult(
+        definition.id,
+        definition.name,
+        CheckState.UNCONNECTABLE,
+        last_error,
+        portal_url=portal_url,
+    )
+
+
+def run_vm_power_state_check(
+    definition: CheckDefinition, *, timeout_seconds: int = 30, retry_count: int = 2
+) -> CheckResult:
+    """Read the live instance view for one VM and compare its power state."""
+    portal_url = _portal_url(definition)
+    tenant_error = _verify_resource_tenant(definition, timeout_seconds)
+    if tenant_error:
+        return CheckResult(
+            definition.id,
+            definition.name,
+            CheckState.UNCONNECTABLE,
+            tenant_error,
+            portal_url=portal_url,
+        )
+    arguments = [
+        "vm",
+        "get-instance-view",
+        "--ids",
+        definition.resource_id,
+        "--subscription",
+        definition.subscription_id,
+        "--output",
+        "json",
+        "--only-show-errors",
+    ]
+    last_error = "Azure did not return the VM instance view."
+    for attempt in range(retry_count + 1):
+        try:
+            completed = _run_az(arguments, timeout_seconds)
+        except subprocess.TimeoutExpired:
+            last_error = f"VM lookup timed out after {timeout_seconds} seconds."
+        except (FileNotFoundError, OSError) as error:
+            last_error = _redact(str(error))
+        else:
+            if completed.returncode == 0:
+                try:
+                    payload = json.loads(completed.stdout)
+                    statuses = payload.get("statuses", [])
+                    if not statuses and isinstance(payload.get("instanceView"), dict):
+                        statuses = payload["instanceView"].get("statuses", [])
+                    power_state = next(
+                        (
+                            str(item.get("code", ""))
+                            for item in statuses
+                            if isinstance(item, dict)
+                            and str(item.get("code", "")).casefold().startswith(
+                                "powerstate/"
+                            )
+                        ),
+                        "",
+                    )
+                except (json.JSONDecodeError, TypeError, AttributeError) as error:
+                    last_error = _redact(str(error))
+                else:
+                    if not power_state:
+                        return CheckResult(
+                            definition.id,
+                            definition.name,
+                            CheckState.UNCONNECTABLE,
+                            "Azure returned the VM, but no live power state was available.",
+                            portal_url=portal_url,
+                        )
+                    healthy = power_state.casefold() in {
+                        item.casefold() for item in definition.expected_values
+                    }
+                    expected = ", ".join(definition.expected_values)
+                    return CheckResult(
+                        definition.id,
+                        definition.name,
+                        CheckState.HEALTHY if healthy else CheckState.FAILED,
+                        f"VM power state is {power_state}; expected {expected}.",
+                        observed_value=power_state,
+                        portal_url=portal_url,
+                    )
+            else:
+                last_error = _redact(
+                    completed.stderr or completed.stdout or "VM lookup failed."
+                )
+        if attempt < retry_count:
+            time.sleep(min(2**attempt, 4))
+    return CheckResult(
+        definition.id,
+        definition.name,
+        CheckState.UNCONNECTABLE,
+        last_error,
         portal_url=portal_url,
     )
 
@@ -986,6 +1198,14 @@ def run_check(
         )
     if definition.kind == "azure_monitor_metric":
         return run_metric_check(
+            definition, timeout_seconds=timeout_seconds, retry_count=retry_count
+        )
+    if definition.kind == "azure_resource_property":
+        return run_resource_property_check(
+            definition, timeout_seconds=timeout_seconds, retry_count=retry_count
+        )
+    if definition.kind == "azure_vm_power_state":
+        return run_vm_power_state_check(
             definition, timeout_seconds=timeout_seconds, retry_count=retry_count
         )
     return run_provisioning_check(

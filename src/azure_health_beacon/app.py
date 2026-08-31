@@ -77,9 +77,12 @@ from .signal_sources import (
     METRIC_OPERATORS,
     METRIC_REDUCER_BY_LABEL,
     METRIC_REDUCERS,
+    PROPERTY_OPERATOR_BY_LABEL,
+    PROPERTY_OPERATORS,
     SIGNAL_SOURCES,
     SOURCE_BY_KEY,
     SOURCE_KEY_BY_LABEL,
+    VM_POWER_STATES,
 )
 from .ui_theme import apply_theme
 from .updater import (
@@ -1163,6 +1166,11 @@ class CheckManager:
         self.metric_operator = StringVar(value=METRIC_OPERATORS["gt"])
         self.metric_threshold = StringVar(value="0")
         self.metric_filter = StringVar()
+        self.property_path = StringVar(value="properties.provisioningState")
+        self.property_operator = StringVar(
+            value=PROPERTY_OPERATORS["equals_any"]
+        )
+        self.source_description = StringVar(value=SIGNAL_SOURCES[0].description)
         self.enabled = BooleanVar(value=True)
         self.last_tested_fingerprint: tuple[object, ...] | None = None
         self.test_status = StringVar(
@@ -1184,6 +1192,8 @@ class CheckManager:
             self.metric_operator,
             self.metric_threshold,
             self.metric_filter,
+            self.property_path,
+            self.property_operator,
             self.enabled,
         ):
             variable.trace_add("write", self._invalidate_test)
@@ -1249,6 +1259,12 @@ class CheckManager:
             state="readonly",
         )
         self.kind_choice.pack(fill=X)
+        ttk.Label(
+            form,
+            textvariable=self.source_description,
+            style="Muted.TLabel",
+            wraplength=680,
+        ).pack(anchor="w", pady=(3, 0))
         self._field(form, "Rule name (editable)", self.name)
 
         self.provisioning_form = ttk.Frame(form)
@@ -1265,6 +1281,66 @@ class CheckManager:
         self._field(
             self.provisioning_form,
             "Healthy provisioning states",
+            self.expected,
+        )
+
+        self.vm_form = ttk.Frame(form)
+        ttk.Label(
+            self.vm_form,
+            text="Reads the VM's live instance view rather than its provisioning state.",
+            wraplength=680,
+        ).pack(anchor="w", pady=(10, 2))
+        self._field(self.vm_form, "Azure Portal URL or VM resource ID", self.reference)
+        ttk.Button(
+            self.vm_form,
+            text="Browse Azure resources…",
+            command=self._discover,
+        ).pack(anchor="w", pady=(7, 0))
+        self._field(
+            self.vm_form,
+            "Healthy VM power states (comma separated)",
+            self.expected,
+        )
+        ttk.Label(
+            self.vm_form,
+            text="Common values: " + ", ".join(VM_POWER_STATES),
+            style="Muted.TLabel",
+            wraplength=680,
+        ).pack(anchor="w", pady=(3, 0))
+
+        self.property_form = ttk.Frame(form)
+        ttk.Label(
+            self.property_form,
+            text="Advanced: compare a value from the resource's ARM JSON document. This does not expose secret values from data-plane services.",
+            wraplength=680,
+        ).pack(anchor="w", pady=(10, 2))
+        self._field(
+            self.property_form,
+            "Azure Portal URL or resource ID",
+            self.reference,
+        )
+        ttk.Button(
+            self.property_form,
+            text="Browse Azure resources…",
+            command=self._discover,
+        ).pack(anchor="w", pady=(7, 0))
+        self._field(
+            self.property_form,
+            "Property path (for example properties.provisioningState)",
+            self.property_path,
+        )
+        ttk.Label(self.property_form, text="Healthy when the property").pack(
+            anchor="w", pady=(10, 2)
+        )
+        ttk.Combobox(
+            self.property_form,
+            textvariable=self.property_operator,
+            values=tuple(PROPERTY_OPERATORS.values()),
+            state="readonly",
+        ).pack(fill=X)
+        self._field(
+            self.property_form,
+            "Comparison values (comma separated; not used for Exists / Is missing)",
             self.expected,
         )
 
@@ -1419,7 +1495,9 @@ class CheckManager:
         for check in self.working.checks:
             source = SOURCE_BY_KEY.get(check.kind, SIGNAL_SOURCES[0])
             short_label = {
-                "Resource property": "Property",
+                "Provisioning state": "Provisioning",
+                "VM power state": "VM power",
+                "Resource property (advanced)": "Property",
                 "Resource Graph": "Graph",
                 "Logs / Application Insights": "Logs",
                 "Azure Monitor metric": "Metric",
@@ -1460,6 +1538,12 @@ class CheckManager:
         )
         self.metric_threshold.set(f"{check.metric_threshold:g}")
         self.metric_filter.set(check.metric_filter)
+        self.property_path.set(check.property_path)
+        self.property_operator.set(
+            PROPERTY_OPERATORS.get(
+                check.property_operator, PROPERTY_OPERATORS["equals_any"]
+            )
+        )
         self._set_query(check.query)
         self.template.set(
             "Custom log query"
@@ -1490,6 +1574,8 @@ class CheckManager:
         self.metric_operator.set(METRIC_OPERATORS["gt"])
         self.metric_threshold.set("0")
         self.metric_filter.set("")
+        self.property_path.set("properties.provisioningState")
+        self.property_operator.set(PROPERTY_OPERATORS["equals_any"])
         self.enabled.set(True)
         self.rule_tree.selection_remove(*self.rule_tree.selection())
         self.test_status.set("Choose a signal source or open Discover Azure signals.")
@@ -1498,6 +1584,8 @@ class CheckManager:
         if not hasattr(self, "provisioning_form"):
             return
         self.provisioning_form.pack_forget()
+        self.vm_form.pack_forget()
+        self.property_form.pack_forget()
         self.graph_form.pack_forget()
         self.log_form.pack_forget()
         self.metric_form.pack_forget()
@@ -1505,6 +1593,7 @@ class CheckManager:
         source_key = SOURCE_KEY_BY_LABEL.get(
             self.kind.get(), "azure_resource_provisioning"
         )
+        self.source_description.set(SOURCE_BY_KEY[source_key].description)
         if source_key == "azure_resource_graph":
             self.graph_form.pack(fill=X, before=self.enabled_check)
             self.query_form.pack(fill=BOTH, expand=True, before=self.enabled_check)
@@ -1538,7 +1627,23 @@ class CheckManager:
             self.test_status.set(
                 "Browse a resource's metric definitions, choose a condition, then test it."
             )
+        elif source_key == "azure_vm_power_state":
+            if self.expected.get().strip() in {"", "Succeeded"}:
+                self.expected.set("PowerState/running")
+            self.vm_form.pack(fill=X, before=self.enabled_check)
+            self.test_status.set(
+                "Choose a VM and the power states that count as healthy, then test it live."
+            )
+        elif source_key == "azure_resource_property":
+            if self.expected.get().strip().startswith("PowerState/"):
+                self.expected.set("")
+            self.property_form.pack(fill=X, before=self.enabled_check)
+            self.test_status.set(
+                "Choose a resource, property path, comparison, and values, then test it live."
+            )
         else:
+            if self.expected.get().strip().startswith("PowerState/"):
+                self.expected.set("Succeeded")
             self.provisioning_form.pack(fill=X, before=self.enabled_check)
             self.test_status.set("Paste an Azure Portal resource URL or resource ID.")
         apply_theme(self.app.root, self.app.config.theme_mode)
@@ -1591,6 +1696,8 @@ class CheckManager:
             definition.metric_operator,
             definition.metric_threshold,
             definition.metric_filter,
+            definition.property_path,
+            definition.property_operator,
         )
 
     def _definition_from_form(self) -> CheckDefinition:
@@ -1679,6 +1786,17 @@ class CheckManager:
                 item.strip() for item in self.expected.get().split(",") if item.strip()
             ],
             enabled=self.enabled.get(),
+            kind=source_key,
+            property_path=(
+                self.property_path.get().strip()
+                if source_key == "azure_resource_property"
+                else ""
+            ),
+            property_operator=(
+                PROPERTY_OPERATOR_BY_LABEL[self.property_operator.get()]
+                if source_key == "azure_resource_property"
+                else "equals_any"
+            ),
         )
         validate_definition(definition)
         return definition
@@ -1833,6 +1951,27 @@ class CheckManager:
         dimensions = ", ".join(metric.dimensions) or "none"
         self.test_status.set(
             f"Selected {metric.display_name} ({metric.unit or 'unitless'}). Available dimensions: {dimensions}."
+        )
+
+    def use_resource(self, resource: AzureResource) -> None:
+        source_key = SOURCE_KEY_BY_LABEL.get(self.kind.get(), "")
+        if source_key not in {
+            "azure_resource_provisioning",
+            "azure_resource_property",
+            "azure_vm_power_state",
+        }:
+            self.kind.set(SOURCE_BY_KEY["azure_resource_property"].label)
+            source_key = "azure_resource_property"
+        self.reference.set(resource.resource_id)
+        if not self.name.get().strip():
+            suffix = {
+                "azure_resource_provisioning": "provisioning",
+                "azure_resource_property": "property",
+                "azure_vm_power_state": "power state",
+            }[source_key]
+            self.name.set(f"{resource.name} — {suffix}")
+        self.test_status.set(
+            f"Selected {resource.name} ({resource.resource_type}). Complete the condition and test it live."
         )
 
     def _export_rules(self) -> None:
@@ -2034,6 +2173,11 @@ class SignalExplorer:
             style="Accent.TButton",
             command=self._load_resources,
         ).pack(fill=X)
+        ttk.Button(
+            resource_frame,
+            text="Use selected resource",
+            command=self._use_resource,
+        ).pack(fill=X, pady=(6, 0))
         ttk.Label(metric_frame, text="Metric definitions", style="Section.TLabel").pack(
             anchor="w"
         )
@@ -2195,6 +2339,12 @@ class SignalExplorer:
                 values=(metric.unit, ", ".join(metric.aggregations)),
             )
         self.status.set(error or f"Found {len(metrics)} metric definition(s).")
+
+    def _use_resource(self) -> None:
+        if self.selected_resource is None:
+            return
+        self.manager.use_resource(self.selected_resource)
+        self.window.destroy()
 
     def _use_metric(self) -> None:
         selection = self.metric_tree.selection()

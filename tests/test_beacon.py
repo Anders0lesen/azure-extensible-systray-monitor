@@ -19,6 +19,8 @@ from azure_health_beacon.azure import (
     run_log_analytics_check,
     run_metric_check,
     run_resource_graph_check,
+    run_resource_property_check,
+    run_vm_power_state_check,
     validate_subscription_access,
 )
 from azure_health_beacon.config import (
@@ -51,6 +53,10 @@ from azure_health_beacon.windows_startup import startup_command
 RESOURCE_ID = (
     "/subscriptions/11111111-1111-1111-1111-111111111111/"
     "resourceGroups/rg-orion/providers/Microsoft.Network/azureFirewalls/orion-fw"
+)
+VM_RESOURCE_ID = (
+    "/subscriptions/11111111-1111-1111-1111-111111111111/"
+    "resourceGroups/rg-orion/providers/Microsoft.Compute/virtualMachines/orion-vm"
 )
 
 
@@ -129,7 +135,7 @@ class ConfigurationTests(unittest.TestCase):
                 encoding="utf-8",
             )
             loaded = load_config(path)
-            self.assertEqual(loaded.schema_version, 5)
+            self.assertEqual(loaded.schema_version, 6)
             self.assertFalse(loaded.onboarding_completed)
             self.assertEqual(loaded.update_mode, "manual")
             self.assertFalse(loaded.start_with_windows)
@@ -152,7 +158,7 @@ class ConfigurationTests(unittest.TestCase):
                 encoding="utf-8",
             )
             loaded = load_config(path)
-            self.assertEqual(loaded.schema_version, 5)
+            self.assertEqual(loaded.schema_version, 6)
             self.assertFalse(loaded.start_with_windows)
             self.assertFalse(loaded.start_minimized)
 
@@ -255,6 +261,29 @@ class ConfigurationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             with self.assertRaisesRegex(ValueError, "Possible secret"):
                 export_rule_pack(Path(directory) / "bad.json", [definition])
+
+    def test_generic_property_rule_rejects_command_like_property_path(self) -> None:
+        definition = CheckDefinition(
+            "property-one",
+            "Unsafe property",
+            RESOURCE_ID,
+            kind="azure_resource_property",
+            expected_values=["Succeeded"],
+            property_path="properties.state; whoami",
+        )
+        with self.assertRaisesRegex(ValueError, "property path"):
+            validate_definition(definition)
+
+    def test_vm_power_rule_requires_a_vm_resource(self) -> None:
+        definition = CheckDefinition(
+            "vm-one",
+            "Not a VM",
+            RESOURCE_ID,
+            kind="azure_vm_power_state",
+            expected_values=["PowerState/running"],
+        )
+        with self.assertRaisesRegex(ValueError, "virtual-machine"):
+            validate_definition(definition)
 
 
 class AzureAuthenticationTests(unittest.TestCase):
@@ -556,7 +585,7 @@ class ExtensibleSignalTests(unittest.TestCase):
             path = Path(directory) / "signals.ahbrules.json"
             export_rule_pack(path, [self.log_definition()])
             payload = json.loads(path.read_text(encoding="utf-8"))
-            self.assertEqual(payload["schema_version"], 3)
+            self.assertEqual(payload["schema_version"], 4)
             self.assertNotIn("token", path.read_text(encoding="utf-8").casefold())
             imported = import_rule_pack(path)
             self.assertFalse(imported[0].enabled)
@@ -576,6 +605,73 @@ class ExtensibleSignalTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(ValueError, "finite"):
             validate_definition(definition)
+
+    @patch("azure_health_beacon.azure._run_az")
+    def test_generic_property_can_compare_any_arm_property(self, run_az) -> None:
+        definition = CheckDefinition(
+            "property-one",
+            "Firewall tier",
+            RESOURCE_ID,
+            expected_values=["Premium"],
+            kind="azure_resource_property",
+            property_path="properties.sku.tier",
+            property_operator="equals_any",
+        )
+        run_az.return_value = subprocess.CompletedProcess(
+            [], 0, json.dumps("Premium"), ""
+        )
+        result = run_resource_property_check(definition, retry_count=0)
+        self.assertEqual(result.state, CheckState.HEALTHY)
+        self.assertEqual(result.observed_value, "Premium")
+        arguments = run_az.call_args.args[0]
+        self.assertEqual(arguments[:2], ["resource", "show"])
+        self.assertEqual(
+            arguments[arguments.index("--query") + 1], definition.property_path
+        )
+
+    @patch("azure_health_beacon.azure._run_az")
+    def test_missing_property_is_a_confirmed_result(self, run_az) -> None:
+        definition = CheckDefinition(
+            "property-two",
+            "Required marker",
+            RESOURCE_ID,
+            expected_values=[],
+            kind="azure_resource_property",
+            property_path="properties.requiredMarker",
+            property_operator="missing",
+        )
+        run_az.return_value = subprocess.CompletedProcess(
+            [], 0, "", ""
+        )
+        result = run_resource_property_check(definition, retry_count=0)
+        self.assertEqual(result.state, CheckState.HEALTHY)
+        self.assertEqual(result.observed_value, "Missing")
+
+    @patch("azure_health_beacon.azure._run_az")
+    def test_vm_instance_view_reports_live_power_state(self, run_az) -> None:
+        definition = CheckDefinition(
+            "vm-one",
+            "Orion VM running",
+            VM_RESOURCE_ID,
+            expected_values=["PowerState/running"],
+            kind="azure_vm_power_state",
+        )
+        run_az.return_value = subprocess.CompletedProcess(
+            [],
+            0,
+            json.dumps(
+                {
+                    "statuses": [
+                        {"code": "ProvisioningState/succeeded"},
+                        {"code": "PowerState/deallocated"},
+                    ]
+                }
+            ),
+            "",
+        )
+        result = run_vm_power_state_check(definition, retry_count=0)
+        self.assertEqual(result.state, CheckState.FAILED)
+        self.assertEqual(result.observed_value, "PowerState/deallocated")
 
 
 class FakeResponse(io.BytesIO):
