@@ -100,13 +100,42 @@ jobs:
           $ExpectedPrevious = ((Get-Content -LiteralPath $PreviousChecksum -Raw) -split '\s+')[0].ToLowerInvariant()
           $ActualPrevious = (Get-FileHash -LiteralPath $PreviousInstaller -Algorithm SHA256).Hash.ToLowerInvariant()
           if ($ActualPrevious -ne $ExpectedPrevious) { throw 'The downloaded 0.6.0 installer checksum did not match.' }
-          $OldSetup = Start-Process -FilePath $PreviousInstaller -ArgumentList @(
+          # Process.WaitForExit follows only Setup itself. Start-Process -Wait
+          # follows Setup's launched Beacon too, which makes a successful old
+          # installation look like a hung test.
+          $OldStartInfo = [Diagnostics.ProcessStartInfo]::new()
+          $OldStartInfo.FileName = $PreviousInstaller
+          $OldStartInfo.UseShellExecute = $false
+          $OldStartInfo.CreateNoWindow = $true
+          foreach ($Argument in @(
             '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/DIR=$InstallDir"
-          ) -Wait -PassThru
+          )) {
+            $OldStartInfo.ArgumentList.Add($Argument)
+          }
+          $OldSetup = [Diagnostics.Process]::Start($OldStartInfo)
+          if (-not $OldSetup.WaitForExit(120000)) {
+            $OldSetup.Kill($true)
+            throw 'The 0.6.0 setup did not exit within two minutes.'
+          }
           if ($OldSetup.ExitCode -ne 0) { throw "The 0.6.0 setup failed: $($OldSetup.ExitCode)" }
           Start-Sleep -Seconds 5
           $OldVersion = (Get-Item -LiteralPath $InstallExe).VersionInfo.ProductVersion.Trim()
           if ($OldVersion -ne '0.6.0') { throw "Expected 0.6.0 before upgrade, found $OldVersion." }
+
+          # The in-app updater starts Setup and then exits. Reproduce that
+          # handoff exactly before asking the new installer to replace files.
+          Get-CimInstance Win32_Process | Where-Object {
+            $_.Name -eq 'AzureHealthBeacon.exe' -and $_.ExecutablePath -eq $InstallExe
+          } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+          $StopDeadline = [DateTime]::UtcNow.AddSeconds(20)
+          do {
+            $OldRunning = Get-CimInstance Win32_Process | Where-Object {
+              $_.Name -eq 'AzureHealthBeacon.exe' -and $_.ExecutablePath -eq $InstallExe
+            }
+            if (-not $OldRunning) { break }
+            Start-Sleep -Milliseconds 250
+          } while ([DateTime]::UtcNow -lt $StopDeadline)
+          if ($OldRunning) { throw 'The 0.6.0 Beacon did not exit for the updater handoff.' }
 
           # Reproduce the environment inherited when an older onefile build
           # starts Setup, exits, and deletes its temporary Python runtime.

@@ -32,6 +32,10 @@ public sealed class CoreClient : IDisposable
             RedirectStandardError = true,
             WorkingDirectory = AppContext.BaseDirectory,
         };
+        // The shell can be restarted by an installer that was launched from an
+        // older PyInstaller onefile process. Never let that process's deleted
+        // _MEI runtime leak into the new private engine.
+        start.Environment["PYINSTALLER_RESET_ENVIRONMENT"] = "1";
         _process = Process.Start(start) ?? throw new InvalidOperationException("The monitoring engine did not start.");
         _process.ErrorDataReceived += (_, _) => { };
         _process.BeginErrorReadLine();

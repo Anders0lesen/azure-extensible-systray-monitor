@@ -69,9 +69,20 @@ function Invoke-Element([Windows.Automation.AutomationElement]$Element) {
 $oldLocal = $env:LOCALAPPDATA
 $oldCore = $env:AZURE_HEALTH_BEACON_CORE
 $oldSecond = $env:AZURE_HEALTH_BEACON_ALLOW_SECOND_INSTANCE
+$oldPyiArchive = $env:_PYI_ARCHIVE_FILE
+$oldPyiHome = $env:_PYI_APPLICATION_HOME_DIR
+$oldPyiLevel = $env:_PYI_PARENT_PROCESS_LEVEL
+$oldPyiReset = $env:PYINSTALLER_RESET_ENVIRONMENT
 $testBase = if ($env:RUNNER_TEMP) { $env:RUNNER_TEMP } else { [IO.Path]::GetTempPath() }
 $testRoot = Join-Path $testBase "azure-health-beacon-shell-$([guid]::NewGuid())"
 New-Item -ItemType Directory -Path $testRoot -Force | Out-Null
+
+# Carry the stale runtime state inherited from the retired Python front end
+# through every launch. The WPF shell must reset it for its private engine.
+$env:_PYI_ARCHIVE_FILE = Join-Path $testRoot 'retired-AzureHealthBeacon.exe'
+$env:_PYI_APPLICATION_HOME_DIR = Join-Path $testRoot '_MEI-retired-runtime'
+$env:_PYI_PARENT_PROCESS_LEVEL = '2'
+Remove-Item Env:PYINSTALLER_RESET_ENVIRONMENT -ErrorAction SilentlyContinue
 
 try {
     $firstUse = Join-Path $testRoot 'first-use'
@@ -146,6 +157,11 @@ finally {
     $env:LOCALAPPDATA = $oldLocal
     $env:AZURE_HEALTH_BEACON_CORE = $oldCore
     $env:AZURE_HEALTH_BEACON_ALLOW_SECOND_INSTANCE = $oldSecond
+    $env:_PYI_ARCHIVE_FILE = $oldPyiArchive
+    $env:_PYI_APPLICATION_HOME_DIR = $oldPyiHome
+    $env:_PYI_PARENT_PROCESS_LEVEL = $oldPyiLevel
+    $env:PYINSTALLER_RESET_ENVIRONMENT = $oldPyiReset
+    Remove-Item -LiteralPath $testRoot -Recurse -Force -ErrorAction SilentlyContinue
 }
 
 Write-Host 'Windows shell first-use and no-preselection flows passed.'
