@@ -177,10 +177,16 @@ jobs:
           if ($InstalledVersion -ne $Version) {
             throw "Restarted version $InstalledVersion did not match $Version."
           }
-          $Running | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
+          $Running | ForEach-Object {
+            Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
+          }
           Get-CimInstance Win32_Process | Where-Object {
             $_.Name -eq 'AzureHealthBeaconCore.exe' -and $_.ExecutablePath -eq $CoreExe
-          } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
+          } | ForEach-Object {
+            # Stopping the shell normally ends the private engine before this
+            # process snapshot is consumed.
+            Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
+          }
       - name: Attest installer provenance
         uses: actions/attest@v4
         with:
