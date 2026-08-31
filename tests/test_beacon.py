@@ -23,6 +23,7 @@ from azure_health_beacon.azure import (
     run_vm_power_state_check,
     validate_subscription_access,
 )
+from azure_health_beacon.bridge import Bridge
 from azure_health_beacon.config import (
     AppConfig,
     clear_connection_metadata,
@@ -82,6 +83,63 @@ class StateTests(unittest.TestCase):
         self.assertEqual(
             aggregate_state([self.result(CheckState.HEALTHY)]), BeaconState.HEALTHY
         )
+
+
+class BridgeTests(unittest.TestCase):
+    def rule_payload(self) -> dict[str, object]:
+        return {
+            "id": "rule-one",
+            "name": "VM should be running",
+            "resource_id": VM_RESOURCE_ID,
+            "kind": "azure_vm_power_state",
+            "expected_values": ["PowerState/running"],
+        }
+
+    def test_unsupported_command_is_rejected(self) -> None:
+        with self.assertRaisesRegex(ValueError, "Unsupported application command"):
+            Bridge().dispatch("run_arbitrary_code", {})
+
+    @patch("azure_health_beacon.bridge.load_config")
+    def test_rule_must_be_tested_before_save(self, load: object) -> None:
+        load.return_value = AppConfig(onboarding_completed=True)  # type: ignore[attr-defined]
+        with self.assertRaisesRegex(ValueError, "Test the current rule"):
+            Bridge().save_rule({"rule": self.rule_payload()})
+
+    @patch("azure_health_beacon.bridge.save_config")
+    @patch("azure_health_beacon.bridge.run_check")
+    @patch("azure_health_beacon.bridge.load_config")
+    def test_successful_test_issues_one_save_receipt(
+        self, load: object, run: object, save: object
+    ) -> None:
+        config = AppConfig(onboarding_completed=True)
+        mark_connection_established(config)
+        load.return_value = config  # type: ignore[attr-defined]
+        run.return_value = CheckResult(  # type: ignore[attr-defined]
+            "rule-one",
+            "VM should be running",
+            CheckState.HEALTHY,
+            "VM power state is PowerState/running.",
+        )
+        bridge = Bridge()
+        tested = bridge.test_rule({"rule": self.rule_payload()})
+        self.assertEqual(tested["state"], "healthy")
+        bridge.save_rule({"rule": self.rule_payload()})
+        self.assertEqual(config.checks[0].id, "rule-one")
+        save.assert_called_once_with(config)  # type: ignore[attr-defined]
+        with self.assertRaisesRegex(ValueError, "Test the current rule"):
+            bridge.save_rule({"rule": self.rule_payload()})
+
+    @patch("azure_health_beacon.bridge.load_config")
+    def test_snapshot_contains_no_credential_material(self, load: object) -> None:
+        load.return_value = AppConfig(  # type: ignore[attr-defined]
+            onboarding_completed=True,
+            azure_subscription_id="subscription",
+            azure_subscription_name="Example",
+            azure_tenant_id="tenant",
+        )
+        encoded = json.dumps(Bridge.snapshot({})).casefold()
+        for forbidden in ("password", "access_token", "refresh_token", "credential"):
+            self.assertNotIn(forbidden, encoded)
 
 
 class ConfigurationTests(unittest.TestCase):

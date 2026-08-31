@@ -71,6 +71,11 @@ def _redact(text: str) -> str:
     return " ".join(text.strip().split())[:500]
 
 
+def redact_error(text: str) -> str:
+    """Return UI-safe error text without exposing authentication material."""
+    return _redact(text)
+
+
 def _azure_cli_command() -> list[str] | None:
     # Prefer the machine-wide Azure CLI install over a same-named executable
     # supplied by the working directory or an earlier, user-writable PATH entry.
@@ -437,9 +442,7 @@ def _portal_url(definition: CheckDefinition) -> str:
     )
 
 
-def _verify_resource_tenant(
-    definition: CheckDefinition, timeout_seconds: int
-) -> str:
+def _verify_resource_tenant(definition: CheckDefinition, timeout_seconds: int) -> str:
     if not definition.tenant_id:
         return ""
     try:
@@ -728,9 +731,9 @@ def run_vm_power_state_check(
                             str(item.get("code", ""))
                             for item in statuses
                             if isinstance(item, dict)
-                            and str(item.get("code", "")).casefold().startswith(
-                                "powerstate/"
-                            )
+                            and str(item.get("code", ""))
+                            .casefold()
+                            .startswith("powerstate/")
                         ),
                         "",
                     )

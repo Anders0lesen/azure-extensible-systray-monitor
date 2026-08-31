@@ -153,6 +153,11 @@ def _definition_from_dict(raw: dict[str, Any]) -> CheckDefinition:
     return definition
 
 
+def definition_from_dict(raw: dict[str, Any]) -> CheckDefinition:
+    """Build and validate a check from a data-only application boundary."""
+    return _definition_from_dict(raw)
+
+
 def load_config(path: Path | None = None) -> AppConfig:
     target = path or config_path()
     if not target.exists():
