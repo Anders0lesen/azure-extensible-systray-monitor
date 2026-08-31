@@ -2,7 +2,7 @@
 
 <img src="assets/AzureHealthBeacon-Brand.png" alt="Azure Health Beacon" width="640">
 
-Current version: **0.5.0 public preview** — see the [changelog](CHANGELOG.md).
+Current version: **0.6.0 public preview** — see the [changelog](CHANGELOG.md).
 
 > **Prototype:** Windows 11 only. **Azure Health Beacon** lets you discover Azure signal surfaces and turn the properties, Resource Graph records, logs, Application Insights telemetry, and metrics you care about into tray warnings.
 
@@ -19,7 +19,7 @@ The application is designed around the complete operating lifecycle, not only th
 | First-ever use | Start grey, open setup automatically, and block monitoring |
 | Add Azure connection | Open Microsoft's interactive login in an app-isolated Azure CLI profile |
 | Test connection | Select a subscription and complete a live, read-only Azure request |
-| Add rule | Choose a resource property, Resource Graph, Logs/Application Insights, or metric source |
+| Add rule | Choose a guided native check, resource property, Resource Graph, Logs/Application Insights, or metric source |
 | Test rule | Run the exact unsaved rule live and show its result without saving |
 | Apply rule | Enabled only after the current rule contents have produced a reachable result |
 | Rules exist | Check every five minutes; aggregate results into one tray state |
@@ -45,7 +45,7 @@ Read [Credential security](docs/credential-security.md) and [Security policy](SE
 
 ## Install
 
-Download the installer from the [latest GitHub release](https://github.com/Anders0lesen/azure-extensible-systray-monitor/releases/latest) and run `AzureHealthBeacon-Setup-v0.5.0.exe`. It installs for the current Windows user, adds a Start Menu entry, and does not request administrator access.
+Download the installer from the [latest GitHub release](https://github.com/Anders0lesen/azure-extensible-systray-monitor/releases/latest) and run `AzureHealthBeacon-Setup-v0.6.0.exe`. It installs for the current Windows user, adds a Start Menu entry, and does not request administrator access.
 
 The public-preview installer is not Authenticode code-signed yet, so Windows may show **Unknown publisher**. The release includes a SHA-256 checksum and GitHub build-provenance attestation. Do not install a copy obtained from anywhere except this repository.
 
@@ -78,9 +78,11 @@ The application artwork is used for Windows branding only. The tray deliberately
 
 ## Signal sources and rules
 
-Version `0.5.0` supports four strict, data-only signal sources:
+Version `0.6.0` supports six strict, data-only signal sources:
 
-- **Resource property:** fetch one resource's `properties.provisioningState`; `Succeeded` is healthy by default.
+- **Provisioning state:** confirm that one resource's `properties.provisioningState` matches the configured healthy states.
+- **VM power state:** read one virtual machine's live instance view and choose which `PowerState/...` values are healthy.
+- **Resource property (advanced):** choose a constrained ARM property path, comparison, and healthy value without writing code.
 - **Resource Graph/KQL findings:** run one read-only query across every enabled subscription the login can access. Zero rows is healthy; one or more rows is a confirmed red finding.
 - **Logs/Application Insights KQL:** select a discoverable Log Analytics workspace, browse its tables, and run full Azure Monitor KQL. Zero rows is healthy; returned rows are findings.
 - **Azure Monitor metric:** select any readable resource and one of its live metric definitions, then configure aggregation, lookback, reducer, optional dimension filter, comparison, and threshold.
@@ -91,7 +93,7 @@ You can edit or write your own [Resource Graph query](https://learn.microsoft.co
 
 Authentication, authorization, connectivity, timeout, invalid-query, and incomplete-scope errors are grey. If one tenant produces a confirmed finding while another tenant cannot be checked, red wins and the result says the scope was partial.
 
-The Azure CLI query returns only provisioning-state text, not the complete resource document.
+Native property rules ask Azure CLI for only the explicitly selected property. The full resource document is not stored, logged, or exported.
 
 ## Rule packs
 

@@ -2,6 +2,25 @@
 
 This project uses [Semantic Versioning](https://semver.org/). Changes are grouped by release so each GitHub tag has a short, human-readable scope.
 
+## [0.6.0] - 2026-08-31
+
+### Added
+
+- Guided VM power-state rules using the VM's live Azure instance view.
+- Generic Azure Resource Manager property rules with explicit property paths, comparisons, and healthy values.
+- Direct resource selection from Signal Explorer for provisioning, VM, and generic property rules.
+
+### Changed
+
+- Renamed the old misleading **Resource property** source to **Provisioning state**.
+- Rule-pack schema 4 carries the new credential-free native rule fields; older packs remain importable and imports remain disabled pending review.
+- Generic property checks ask Azure for only the selected value, parse it locally, and never execute rule text in a shell.
+
+### Fixed
+
+- In-place updates now reset inherited PyInstaller one-file state before restart, preventing the temporary `python312.dll` startup failure.
+- The release workflow now reproduces the stale `_MEI` update environment and fails the release if the restarted app does not survive.
+
 ## [0.5.0] - 2026-08-27
 
 ### Added
@@ -69,3 +88,4 @@ First public preview.
 [0.3.0]: https://github.com/Anders0lesen/azure-extensible-systray-monitor/releases/tag/v0.3.0
 [0.4.0]: https://github.com/Anders0lesen/azure-extensible-systray-monitor/releases/tag/v0.4.0
 [0.5.0]: https://github.com/Anders0lesen/azure-extensible-systray-monitor/releases/tag/v0.5.0
+[0.6.0]: https://github.com/Anders0lesen/azure-extensible-systray-monitor/releases/tag/v0.6.0
