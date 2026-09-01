@@ -111,7 +111,7 @@ public partial class MainWindow : Window
     {
         PageTitle.Text = "Welcome to Azure Health Beacon";
         PageSubtitle.Text = "Connect securely before creating any checks";
-        SetNavigationEnabled(false);
+        SetConnectionGatedNavigation(false);
         var page = PageStack();
         page.Children.Add(Heading("Let’s connect Azure", "The Beacon uses Microsoft’s interactive sign-in. Your password and MFA response are never seen or stored by this app."));
         var panel = Card();
@@ -157,7 +157,7 @@ public partial class MainWindow : Window
                 if (!Bool(result["success"])) throw new InvalidOperationException(Text(result["message"], "Credential test failed."));
                 await RefreshSnapshotAsync();
                 UpdateConnectionSummary();
-                SetNavigationEnabled(true);
+                SetConnectionGatedNavigation(true);
                 ResetCheckTimer();
                 ShowOverview();
                 await CheckNowAsync();
@@ -562,7 +562,12 @@ public partial class MainWindow : Window
         var page = PageStack(); var card = Card(); var body = Vertical(card);
         body.Children.Add(Heading("Azure Health Beacon", $"Version {Text(_snapshot["version"], "0.7.1")} · Windows 11"));
         body.Children.Add(Muted("An extensible, local-first Azure signal monitor. Confirmed Azure findings are red; authentication, network, timeout, access, and indeterminate results remain grey."));
-        var github = Primary("Open GitHub repository"); github.Margin = new Thickness(0, 16, 0, 0); github.Click += (_, _) => Process.Start(new ProcessStartInfo("https://github.com/Anders0lesen/azure-extensible-systray-monitor") { UseShellExecute = true }); body.Children.Add(github);
+        var actions = new WrapPanel { Margin = new Thickness(0, 16, 0, 0) };
+        var github = Primary("Open GitHub repository"); github.Click += (_, _) => Process.Start(new ProcessStartInfo("https://github.com/Anders0lesen/azure-extensible-systray-monitor") { UseShellExecute = true }); actions.Children.Add(github);
+        var checkUpdate = Secondary("Check for updates"); checkUpdate.Margin = new Thickness(8, 0, 0, 0); actions.Children.Add(checkUpdate);
+        var updateStatus = new TextBlock { Foreground = Brush("SuccessBrush"), Margin = new Thickness(0, 10, 0, 0), TextWrapping = TextWrapping.Wrap };
+        checkUpdate.Click += async (_, _) => await CheckForUpdatesInteractiveAsync(updateStatus);
+        body.Children.Add(actions); body.Children.Add(updateStatus);
         body.Children.Add(SectionTitle("Bundled icons")); body.Children.Add(Muted("Tabler Icons v3.46.0 · MIT License · baked into the application for offline use."));
         page.Children.Add(card); ContentHost.Content = page;
     }
@@ -674,9 +679,20 @@ public partial class MainWindow : Window
     private static string SourceName(string key) => key switch { "azure_resource_provisioning"=>"Provisioning state", "azure_vm_power_state"=>"VM power state", "azure_resource_property"=>"Resource property", "azure_resource_graph"=>"Resource Graph", "azure_log_analytics"=>"Logs / Application Insights", "azure_monitor_metric"=>"Azure Monitor metric", _=>key };
     private static string IconFor(string key) => key switch { "azure_resource_provisioning"=>"progress-check", "azure_vm_power_state"=>"server-2", "azure_resource_property"=>"braces", "azure_resource_graph"=>"hierarchy-2", "azure_log_analytics"=>"file-analytics", "azure_monitor_metric"=>"activity", _=>"activity" };
     private static void ShowError(Exception error) => System.Windows.MessageBox.Show(error.Message, "Azure Health Beacon", MessageBoxButton.OK, MessageBoxImage.Error);
-    private void SetNavigationEnabled(bool enabled) { OverviewNav.IsEnabled=enabled; ChecksNav.IsEnabled=enabled; ActivityNav.IsEnabled=enabled; SettingsNav.IsEnabled=enabled; AboutNav.IsEnabled=enabled; }
+    private void SetConnectionGatedNavigation(bool connected)
+    {
+        OverviewNav.IsEnabled = true;
+        ChecksNav.IsEnabled = connected;
+        ActivityNav.IsEnabled = connected;
+        SettingsNav.IsEnabled = true;
+        AboutNav.IsEnabled = true;
+    }
 
-    private void Overview_Click(object sender, RoutedEventArgs e) => ShowOverview();
+    private void Overview_Click(object sender, RoutedEventArgs e)
+    {
+        if (Bool(_snapshot["connection"]?["initialized"])) ShowOverview();
+        else ShowOnboarding();
+    }
     private void Checks_Click(object sender, RoutedEventArgs e) => ShowChecks();
     private void Activity_Click(object sender, RoutedEventArgs e) => ShowActivity();
     private void Settings_Click(object sender, RoutedEventArgs e) => ShowSettings();

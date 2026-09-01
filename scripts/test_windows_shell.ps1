@@ -91,6 +91,20 @@ try {
         $root = [Windows.Automation.AutomationElement]::FromHandle($shell.MainWindowHandle)
         Require-Element (Find-Element $root 'Sign in with Microsoft' ([Windows.Automation.ControlType]::Button)) 'first-use Microsoft sign-in button'
         Require-Element (Find-Element $root 'Test credentials and finish setup' ([Windows.Automation.ControlType]::Button)) 'credential-test button'
+
+        foreach ($navigationName in @('Overview', 'Settings', 'About')) {
+            $navigation = Find-Element $root $navigationName ([Windows.Automation.ControlType]::Button)
+            Require-Element $navigation "first-use $navigationName navigation"
+            if (-not $navigation.Current.IsEnabled) {
+                throw "$navigationName was blocked before Azure credentials were accepted."
+            }
+        }
+        Invoke-Element (Find-Element $root 'Settings' ([Windows.Automation.ControlType]::Button))
+        Require-Element (Find-Element $root 'Check for updates' ([Windows.Automation.ControlType]::Button)) 'first-use Settings update button'
+        Invoke-Element (Find-Element $root 'About' ([Windows.Automation.ControlType]::Button))
+        Require-Element (Find-Element $root 'Check for updates' ([Windows.Automation.ControlType]::Button)) 'first-use About update button'
+        Invoke-Element (Find-Element $root 'Overview' ([Windows.Automation.ControlType]::Button))
+        Require-Element (Find-Element $root 'Sign in with Microsoft' ([Windows.Automation.ControlType]::Button)) 'return from recovery navigation to setup'
     }
     finally { Stop-TestProcesses $shell }
 

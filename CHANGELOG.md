@@ -2,6 +2,13 @@
 
 This project uses [Semantic Versioning](https://semver.org/). Changes are grouped by release so each GitHub tag has a short, human-readable scope.
 
+## [Unreleased]
+
+### Fixed
+
+- Overview, Settings, and About remain available when Azure sign-in has not succeeded, so credential trouble cannot block update recovery.
+- About now includes its own **Check for updates** action, and Overview returns an unconnected user to setup.
+
 ## [0.7.1] - 2026-09-01
 
 ### Security
@@ -131,4 +138,5 @@ First public preview.
 [0.5.0]: https://github.com/Anders0lesen/azure-extensible-systray-monitor/releases/tag/v0.5.0
 [0.6.0]: https://github.com/Anders0lesen/azure-extensible-systray-monitor/releases/tag/v0.6.0
 [0.7.1]: https://github.com/Anders0lesen/azure-extensible-systray-monitor/releases/tag/v0.7.1
+[Unreleased]: https://github.com/Anders0lesen/azure-extensible-systray-monitor/compare/v0.7.1...HEAD
 [0.7.0]: https://github.com/Anders0lesen/azure-extensible-systray-monitor/releases/tag/v0.7.0
