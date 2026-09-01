@@ -117,7 +117,7 @@ public partial class MainWindow : Window
         var panel = Card();
         var content = Vertical(panel);
         content.Children.Add(IconTitle("key", "1. Sign in with Microsoft"));
-        content.Children.Add(Muted("A browser-based Microsoft sign-in opens. Azure CLI keeps its encrypted session in an app-isolated profile and the Beacon hard-deletes it after 14 days."));
+        content.Children.Add(Muted("A browser-based Microsoft sign-in opens. The Beacon keeps its OAuth session only in an app-owned, Windows DPAPI-encrypted cache and hard-deletes it after 14 days."));
         var signIn = Primary("Sign in with Microsoft");
         var status = Muted("Not signed in yet.");
         var subscriptions = new ComboBox { Margin = new Thickness(0, 14, 0, 0), IsEnabled = false, DisplayMemberPath = "Name" };
@@ -488,18 +488,27 @@ public partial class MainWindow : Window
     {
         PageTitle.Text = "Settings"; PageSubtitle.Text = "Windows, monitoring, appearance, and updates";
         var settings = _snapshot["settings"]?.AsObject() ?? new JsonObject();
-        var page = PageStack(); var panel = Card(); var body = Vertical(panel); body.Children.Add(SectionTitle("Windows"));
-        var startup = new CheckBox { Content = "Start Azure Health Beacon when I sign in to Windows", IsChecked = Bool(settings["start_with_windows"]) }; body.Children.Add(startup);
-        var minimized = new CheckBox { Content = "Start minimized in the notification area", IsChecked = Bool(settings["start_minimized"]) }; body.Children.Add(minimized);
-        body.Children.Add(Muted("Both options are explicitly opt-in."));
-        body.Children.Add(SectionTitle("Monitoring"));
-        var interval = Field(body, "Check interval in minutes", Text(settings["interval_minutes"], "5"));
-        var timeout = Field(body, "Per-attempt timeout in seconds", Text(settings["timeout_seconds"], "30"));
-        var retries = Field(body, "Retry count", Text(settings["retry_count"], "2"));
-        body.Children.Add(SectionTitle("Azure connection"));
-        body.Children.Add(Muted("Deleting the connection removes the complete app-isolated Azure CLI profile and subscription binding. Rules are retained."));
+        var page = new StackPanel { MaxWidth = 1100, HorizontalAlignment = HAlign.Stretch };
+        var columns = new Grid();
+        columns.ColumnDefinitions.Add(new ColumnDefinition());
+        columns.ColumnDefinitions.Add(new ColumnDefinition());
+
+        var windowsCard = Card(); windowsCard.Margin = new Thickness(0, 0, 7, 14);
+        var windowsBody = Vertical(windowsCard); windowsBody.Children.Add(CompactSectionTitle("Windows"));
+        var startup = new CheckBox { Content = "Start with Windows", IsChecked = Bool(settings["start_with_windows"]), Margin = new Thickness(0, 2, 0, 5) }; windowsBody.Children.Add(startup);
+        var minimized = new CheckBox { Content = "Start minimized in the notification area", IsChecked = Bool(settings["start_minimized"]), Margin = new Thickness(0, 2, 0, 0) }; windowsBody.Children.Add(minimized);
+        windowsBody.Children.Add(Muted("Both options are explicitly opt-in."));
+        windowsBody.Children.Add(SectionTitle("Monitoring"));
+        var interval = CompactField(windowsBody, "Check interval", "minutes", Text(settings["interval_minutes"], "5"));
+        var timeout = CompactField(windowsBody, "Attempt timeout", "seconds", Text(settings["timeout_seconds"], "30"));
+        var retries = CompactField(windowsBody, "Retry count", "", Text(settings["retry_count"], "2"));
+        Grid.SetColumn(windowsCard, 0); columns.Children.Add(windowsCard);
+
+        var serviceCard = Card(); serviceCard.Margin = new Thickness(7, 0, 0, 14);
+        var serviceBody = Vertical(serviceCard); serviceBody.Children.Add(CompactSectionTitle("Azure connection"));
+        serviceBody.Children.Add(Muted("Remove this app's encrypted OAuth cache and subscription binding. Rules are retained."));
         var deleteConnection = Secondary("Delete Azure connection…");
-        deleteConnection.Margin = new Thickness(0, 8, 0, 0);
+        deleteConnection.HorizontalAlignment = HAlign.Left; deleteConnection.MinWidth = 190; deleteConnection.Margin = new Thickness(0, 10, 0, 0);
         deleteConnection.Click += async (_, _) =>
         {
             if (System.Windows.MessageBox.Show("Delete all authorization state owned by Azure Health Beacon? Your rules will be retained.", "Delete Azure connection", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes) return;
@@ -514,16 +523,18 @@ public partial class MainWindow : Window
             }
             catch (Exception error) { ShowError(error); }
         };
-        body.Children.Add(deleteConnection);
-        body.Children.Add(SectionTitle("Updates"));
+        serviceBody.Children.Add(deleteConnection);
+        serviceBody.Children.Add(SectionTitle("Updates"));
         var manual = new RadioButton { Content = "Manual only", GroupName = "Updates", IsChecked = Text(settings["update_mode"], "manual") == "manual", Margin = new Thickness(0, 5, 0, 3) };
         var notify = new RadioButton { Content = "Notify me when an update is available", GroupName = "Updates", IsChecked = Text(settings["update_mode"]) == "notify", Margin = new Thickness(0, 5, 0, 3) };
         var automatic = new RadioButton { Content = "Install verified updates automatically", GroupName = "Updates", IsChecked = Text(settings["update_mode"]) == "automatic", Margin = new Thickness(0, 5, 0, 3) };
-        body.Children.Add(manual); body.Children.Add(notify); body.Children.Add(automatic); body.Children.Add(Muted("Notification and automatic installation are opt-in. Downloads must match the release SHA-256 checksum."));
-        var updateStatus = new TextBlock { Foreground = Brush("SuccessBrush"), Margin = new Thickness(0, 12, 0, 0) };
-        var checkUpdate = Secondary("Check for updates"); checkUpdate.Margin = new Thickness(0, 8, 0, 0); checkUpdate.Click += async (_, _) => await CheckForUpdatesInteractiveAsync(updateStatus); body.Children.Add(updateStatus); body.Children.Add(checkUpdate);
-        page.Children.Add(panel);
-        var actions = new DockPanel(); var save = Primary("Save settings"); DockPanel.SetDock(save, Dock.Right); actions.Children.Add(save); page.Children.Add(actions);
+        serviceBody.Children.Add(manual); serviceBody.Children.Add(notify); serviceBody.Children.Add(automatic); serviceBody.Children.Add(Muted("Update checks and automatic installation are opt-in. Every download must match its published SHA-256 checksum."));
+        var updateStatus = new TextBlock { Foreground = Brush("SuccessBrush"), Margin = new Thickness(0, 10, 0, 0), TextWrapping = TextWrapping.Wrap };
+        var checkUpdate = Secondary("Check for updates"); checkUpdate.HorizontalAlignment = HAlign.Left; checkUpdate.MinWidth = 160; checkUpdate.Margin = new Thickness(0, 8, 0, 0); checkUpdate.Click += async (_, _) => await CheckForUpdatesInteractiveAsync(updateStatus); serviceBody.Children.Add(updateStatus); serviceBody.Children.Add(checkUpdate);
+        Grid.SetColumn(serviceCard, 1); columns.Children.Add(serviceCard);
+        page.Children.Add(columns);
+
+        var actions = new DockPanel(); var save = Primary("Save settings"); save.Width = 160; DockPanel.SetDock(save, Dock.Right); actions.Children.Add(save); page.Children.Add(actions);
         save.Click += async (_, _) =>
         {
             try
@@ -549,7 +560,7 @@ public partial class MainWindow : Window
     {
         PageTitle.Text = "About"; PageSubtitle.Text = "Product, privacy, and open-source acknowledgements";
         var page = PageStack(); var card = Card(); var body = Vertical(card);
-        body.Children.Add(Heading("Azure Health Beacon", $"Version {Text(_snapshot["version"], "0.7.0")} · Windows 11"));
+        body.Children.Add(Heading("Azure Health Beacon", $"Version {Text(_snapshot["version"], "0.7.1")} · Windows 11"));
         body.Children.Add(Muted("An extensible, local-first Azure signal monitor. Confirmed Azure findings are red; authentication, network, timeout, access, and indeterminate results remain grey."));
         var github = Primary("Open GitHub repository"); github.Margin = new Thickness(0, 16, 0, 0); github.Click += (_, _) => Process.Start(new ProcessStartInfo("https://github.com/Anders0lesen/azure-extensible-systray-monitor") { UseShellExecute = true }); body.Children.Add(github);
         body.Children.Add(SectionTitle("Bundled icons")); body.Children.Add(Muted("Tabler Icons v3.46.0 · MIT License · baked into the application for offline use."));
@@ -626,12 +637,30 @@ public partial class MainWindow : Window
     private static StackPanel Vertical(Border card) { var body = new StackPanel(); card.Child = body; return body; }
     private static StackPanel Heading(string title, string subtitle) { var p = new StackPanel(); p.Children.Add(new TextBlock { Text=title, FontSize=19, FontWeight=FontWeights.SemiBold }); if (!string.IsNullOrWhiteSpace(subtitle)) p.Children.Add(new TextBlock { Text=subtitle, Foreground=Brush("MutedBrush"), Margin=new Thickness(0,4,0,0) }); return p; }
     private static TextBlock SectionTitle(string text) => new() { Text=text, FontWeight=FontWeights.SemiBold, FontSize=15, Margin=new Thickness(0,18,0,9) };
+    private static TextBlock CompactSectionTitle(string text) => new() { Text=text, FontWeight=FontWeights.SemiBold, FontSize=15, Margin=new Thickness(0,0,0,9) };
     private static TextBlock Muted(string text) => new() { Text=text, Foreground=Brush("MutedBrush"), FontSize=12, Margin=new Thickness(0,5,0,0) };
     private static Button Primary(string text) => new() { Content=text, Style=(Style)System.Windows.Application.Current.FindResource("PrimaryButton") };
     private static Button Secondary(string text) => new() { Content=text };
     private static StackPanel IconTitle(string icon, string title) { var row = new StackPanel { Orientation=Orientation.Horizontal, Margin=new Thickness(0,0,0,5) }; row.Children.Add(new TablerIcon { Icon=icon, Width=24, Height=24, Stroke=Brush("AccentBrush"), Margin=new Thickness(0,0,10,0) }); row.Children.Add(new TextBlock { Text=title, FontWeight=FontWeights.SemiBold, FontSize=16, VerticalAlignment=VAlign.Center }); return row; }
     private static Border Badge(string text, string state) { var color = state switch { "healthy" => Brush("SuccessBrush"), "failed" => Brush("DangerBrush"), "unconnectable" => Brush("MutedBrush"), _ => Brush("MutedBrush") }; return new Border { BorderBrush=color, BorderThickness=new Thickness(1), CornerRadius=new CornerRadius(10), Padding=new Thickness(8,3,8,3), Margin=new Thickness(8,0,0,0), Child=new TextBlock { Text=text, Foreground=color, FontSize=10, FontWeight=FontWeights.SemiBold } }; }
     private static TextBox Field(Panel parent, string label, string value, bool multiline=false) { parent.Children.Add(new TextBlock { Text=label, FontWeight=FontWeights.SemiBold, Margin=new Thickness(0,12,0,5) }); var box = new TextBox { Text=value, AcceptsReturn=multiline, TextWrapping=multiline ? TextWrapping.NoWrap : TextWrapping.Wrap, MinHeight=multiline ? 170 : 0, VerticalScrollBarVisibility=multiline ? ScrollBarVisibility.Auto : ScrollBarVisibility.Disabled, HorizontalScrollBarVisibility=multiline ? ScrollBarVisibility.Auto : ScrollBarVisibility.Disabled, FontFamily=multiline ? new FontFamily("Cascadia Mono, Consolas") : System.Windows.Application.Current.MainWindow?.FontFamily }; parent.Children.Add(box); return box; }
+    private static TextBox CompactField(Panel parent, string label, string unit, string value)
+    {
+        var row = new Grid { Margin = new Thickness(0, 9, 0, 0) };
+        row.ColumnDefinitions.Add(new ColumnDefinition());
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        row.Children.Add(new TextBlock { Text=label, FontWeight=FontWeights.SemiBold, VerticalAlignment=VAlign.Center });
+        var box = new TextBox { Text=value, Width=72, Margin=new Thickness(12,0,0,0), HorizontalContentAlignment=HAlign.Right };
+        Grid.SetColumn(box, 1); row.Children.Add(box);
+        if (!string.IsNullOrWhiteSpace(unit))
+        {
+            var suffix = new TextBlock { Text=unit, Foreground=Brush("MutedBrush"), Margin=new Thickness(8,0,0,0), VerticalAlignment=VAlign.Center, Width=54 };
+            Grid.SetColumn(suffix, 2); row.Children.Add(suffix);
+        }
+        parent.Children.Add(row);
+        return box;
+    }
     private static ComboBox Choice(Panel parent, string label, string[] values, string selected) { parent.Children.Add(new TextBlock { Text=label, FontWeight=FontWeights.SemiBold, Margin=new Thickness(0,12,0,5) }); var combo = new ComboBox { ItemsSource=values, SelectedItem=selected }; if (combo.SelectedIndex < 0) combo.SelectedIndex=0; parent.Children.Add(combo); return combo; }
     private static Brush Brush(string key) => (Brush)System.Windows.Application.Current.FindResource(key);
     private static string Text(JsonNode? node, string fallback="") { if (node is null) return fallback; try { return node.GetValue<string>(); } catch { return node.ToJsonString().Trim('"'); } }

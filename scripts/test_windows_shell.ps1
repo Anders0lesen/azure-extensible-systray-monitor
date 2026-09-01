@@ -120,12 +120,50 @@ try {
         ($fixture | ConvertTo-Json -Depth 5),
         [Text.UTF8Encoding]::new($false)
     )
+    # This UI-only fixture never makes an Azure request. Presence of both
+    # opaque files represents a configured encrypted identity without placing
+    # any real token material in the test workspace.
+    $identity = Join-Path $data 'identity'
+    New-Item -ItemType Directory -Path $identity -Force | Out-Null
+    [IO.File]::WriteAllBytes((Join-Path $identity 'token-cache.bin'), [byte[]](1))
+    [IO.File]::WriteAllBytes((Join-Path $identity 'account-state.bin'), [byte[]](1))
 
     $shell = Start-TestShell $configured
     try {
         $root = [Windows.Automation.AutomationElement]::FromHandle($shell.MainWindowHandle)
-        $add = Find-Element $root 'Add your first check' ([Windows.Automation.ControlType]::Button)
-        Require-Element $add 'add-first-check button'
+
+        Invoke-Element (Find-Element $root 'Settings' ([Windows.Automation.ControlType]::Button))
+        $saveSettings = Find-Element $root 'Save settings' ([Windows.Automation.ControlType]::Button)
+        $deleteConnection = Find-Element $root 'Delete Azure connection…' ([Windows.Automation.ControlType]::Button)
+        $checkUpdates = Find-Element $root 'Check for updates' ([Windows.Automation.ControlType]::Button)
+        Require-Element $saveSettings 'compact save-settings button'
+        Require-Element $deleteConnection 'compact delete-connection button'
+        Require-Element $checkUpdates 'compact check-updates button'
+        foreach ($button in @($saveSettings, $deleteConnection, $checkUpdates)) {
+            if ($button.Current.BoundingRectangle.Width -gt 260) {
+                throw "Settings action expanded beyond its compact width: $($button.Current.Name)"
+            }
+        }
+        $editCondition = [Windows.Automation.PropertyCondition]::new(
+            [Windows.Automation.AutomationElement]::ControlTypeProperty,
+            [Windows.Automation.ControlType]::Edit
+        )
+        $settingsEdits = $root.FindAll([Windows.Automation.TreeScope]::Descendants, $editCondition)
+        if ($settingsEdits.Count -ne 3) {
+            throw "Expected three compact monitoring fields; found $($settingsEdits.Count)."
+        }
+        foreach ($edit in $settingsEdits) {
+            if ($edit.Current.BoundingRectangle.Width -gt 100) {
+                throw 'A monitoring value field expanded beyond its compact width.'
+            }
+        }
+        if ($deleteConnection.Current.BoundingRectangle.Left -le $settingsEdits[0].Current.BoundingRectangle.Left) {
+            throw 'Settings did not use the available horizontal space as two columns.'
+        }
+
+        Invoke-Element (Find-Element $root 'Checks' ([Windows.Automation.ControlType]::Button))
+        $add = Find-Element $root '＋  Add a check' ([Windows.Automation.ControlType]::Button)
+        Require-Element $add 'add-check button'
         Invoke-Element $add
 
         $sources = @(

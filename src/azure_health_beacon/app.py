@@ -602,9 +602,8 @@ class BeaconApp:
     def delete_connection(self) -> None:
         confirmed = messagebox.askyesno(
             "Delete Azure connection?",
-            "This permanently deletes Azure Health Beacon's isolated Azure CLI profile and saved connection "
-            "binding. Monitoring stops, but rules are retained. Your normal Azure CLI profile and Windows work "
-            "account are not changed.",
+            "This permanently deletes Azure Health Beacon's app-owned DPAPI-encrypted OAuth cache and saved "
+            "connection binding. Monitoring stops, but rules are retained. Your Windows work account is not changed.",
             parent=self.status_window
             if self.status_window and self.status_window.winfo_exists()
             else self.root,
@@ -914,7 +913,7 @@ class BeaconApp:
             body,
             text=(
                 "A read-only Windows 11 tray monitor for user-defined Azure signals. "
-                "Authentication stays inside Microsoft's sign-in flow and the Beacon's isolated Azure CLI profile."
+                "Authentication stays inside Microsoft's sign-in flow and the Beacon's app-owned encrypted cache."
             ),
             wraplength=450,
         ).pack(anchor="w")
@@ -993,9 +992,9 @@ class SetupWizard:
         ttk.Label(
             security,
             text=(
-                "Your username, password, MFA response, and access tokens are handled only by Microsoft's sign-in "
-                "flow and Azure CLI/WAM. Azure Health Beacon never receives or stores them. It stores only the "
-                "tenant and subscription IDs you select. The app deletes its isolated Azure profile after 14 days."
+                "Your username, password, and MFA response stay inside Microsoft's sign-in flow. OAuth tokens are "
+                "persisted only as Windows DPAPI ciphertext, separate from rules and configuration. The complete "
+                "app-owned identity cache is deleted after 14 days."
             ),
             wraplength=510,
         ).pack(anchor="w")
@@ -1056,7 +1055,7 @@ class SetupWizard:
         )
         ttk.Label(
             self.page,
-            text="Select the subscription the Beacon should validate. This does not change Azure CLI's global subscription.",
+            text="Select the subscription the Beacon should validate. The Beacon has no global Azure CLI context.",
             wraplength=540,
         ).pack(anchor="w", pady=(8, 18))
         labels = [f"{item.name} — {item.id}" for item in subscriptions]
