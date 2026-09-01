@@ -2,6 +2,26 @@
 
 This project uses [Semantic Versioning](https://semver.org/). Changes are grouped by release so each GitHub tag has a short, human-readable scope.
 
+## [0.7.1] - 2026-09-01
+
+### Security
+
+- Removed the machine-wide Azure CLI dependency and every Azure CLI execution path.
+- Replaced the isolated CLI profile with an app-owned MSAL cache encrypted by Windows DPAPI CurrentUser. Plaintext fallback is refused.
+- Azure Resource Manager, Resource Graph, Log Analytics/Application Insights, and Monitor metrics now use direct OAuth-authenticated HTTPS.
+- The 14-day purge now hard-deletes the encrypted identity directory and any legacy v0.7.0 CLI profile while retaining rules.
+
+### Changed
+
+- Upgrading from v0.7.0 requires one fresh Microsoft sign-in; existing rules and settings remain compatible.
+- Settings now uses two compact columns, short inline monitoring fields, and content-width action buttons.
+- First-use, Settings, About, lifecycle, and security documentation now describe the actual app-owned credential boundary.
+
+### Fixed
+
+- Tests use isolated local-app-data fixtures and cannot alter an installed Beacon configuration.
+- Added Windows DPAPI ciphertext, no-CLI-runtime, multi-tenant HTTPS, and direct ARM property regressions.
+
 ## [0.7.0] - 2026-08-31
 
 ### Added
@@ -110,4 +130,5 @@ First public preview.
 [0.4.0]: https://github.com/Anders0lesen/azure-extensible-systray-monitor/releases/tag/v0.4.0
 [0.5.0]: https://github.com/Anders0lesen/azure-extensible-systray-monitor/releases/tag/v0.5.0
 [0.6.0]: https://github.com/Anders0lesen/azure-extensible-systray-monitor/releases/tag/v0.6.0
+[0.7.1]: https://github.com/Anders0lesen/azure-extensible-systray-monitor/releases/tag/v0.7.1
 [0.7.0]: https://github.com/Anders0lesen/azure-extensible-systray-monitor/releases/tag/v0.7.0

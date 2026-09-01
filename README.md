@@ -2,7 +2,7 @@
 
 <img src="assets/AzureHealthBeacon-Brand.png" alt="Azure Health Beacon" width="640">
 
-Current version: **0.7.0 public preview** — see the [changelog](CHANGELOG.md).
+Current version: **0.7.1 public preview** — see the [changelog](CHANGELOG.md).
 
 > **Prototype:** Windows 11 only. **Azure Health Beacon** lets you discover Azure signal surfaces and turn the properties, Resource Graph records, logs, Application Insights telemetry, and metrics you care about into tray warnings.
 
@@ -17,17 +17,17 @@ The application is designed around the complete operating lifecycle, not only th
 | Phase | Required behavior |
 |---|---|
 | First-ever use | Start grey, open setup automatically, and block monitoring |
-| Add Azure connection | Open Microsoft's interactive login in an app-isolated Azure CLI profile |
+| Add Azure connection | Open Microsoft's interactive OAuth login and create an app-owned DPAPI-encrypted cache |
 | Test connection | Select a subscription and complete a live, read-only Azure request |
 | Add rule | Choose a guided native check, resource property, Resource Graph, Logs/Application Insights, or metric source |
 | Test rule | Run the exact unsaved rule live and show its result without saving |
 | Apply rule | Enabled only after the current rule contents have produced a reachable result |
 | Rules exist | Check every five minutes; aggregate results into one tray state |
-| Connection reaches 14 days | Stop monitoring, hard-delete the app-owned Azure CLI profile, and require setup again |
+| Connection reaches 14 days | Stop monitoring, hard-delete the app-owned encrypted identity cache, and require setup again |
 | Export rules | Produce a credential-free, data-only team rule pack |
 | Import rules | Strictly validate and import disabled pending review and testing |
 | Delete rule | Confirm and remove only the selected rule |
-| Delete Azure connection | Delete the isolated Azure CLI profile and scope binding; retain rules |
+| Delete Azure connection | Delete the encrypted identity cache and scope binding; retain rules |
 | Update the app | Manual by default; notification or automatic installation requires explicit opt-in |
 | Remove the app | Use Windows Installed apps; local rules and credentials are retained unless explicitly deleted |
 
@@ -35,17 +35,17 @@ See [Lifecycle](docs/lifecycle.md) and [First-run setup](docs/first-run.md).
 
 ## Credential security
 
-Azure Health Beacon has no username, password, token, client-secret, certificate, or connection-string field. Microsoft's UI and Azure CLI/Windows Web Account Manager handle interactive authentication. The Beacon never calls `az account get-access-token` and stores only non-secret tenant/subscription identifiers plus a connection-establishment timestamp.
+Azure Health Beacon has no username, password, MFA, client-secret, certificate, or connection-string field. Microsoft's browser handles interactive authentication. The reusable OAuth session is stored only as Windows DPAPI CurrentUser ciphertext under `%LOCALAPPDATA%\AzureHealthBeacon\identity`; plaintext fallback is forbidden.
 
-Every Azure CLI process receives an app-specific `AZURE_CONFIG_DIR` under `%LOCALAPPDATA%\AzureHealthBeacon\azure-cli`. The user's normal `%USERPROFILE%\.azure` profile is never read, changed, logged out, or deleted by the Beacon.
+The app does not execute Azure CLI, require it to be installed, or read the user's normal `%USERPROFILE%\.azure` profile. Monitoring uses direct HTTPS calls to Azure Resource Manager, Resource Graph, Log Analytics/Application Insights, and Azure Monitor.
 
-The authorization lease is exactly 14 days and is not configurable. At expiry, monitoring stops and the entire app-owned Azure CLI directory is deleted. WAM may still know the Windows work account for system SSO; the Beacon does not and must not remove a Windows/IBM account.
+The authorization lease is exactly 14 days and is not configurable. At expiry, monitoring stops and the complete app-owned encrypted identity directory is deleted. Rules remain, and the user must sign in again.
 
-Read [Credential security](docs/credential-security.md) and [Security policy](SECURITY.md) before using the prototype with a work account. Microsoft documents WAM as Azure CLI's default authentication broker on current Windows versions: [Sign in with Azure CLI](https://learn.microsoft.com/cli/azure/authenticate-azure-cli-interactively).
+Read [Credential security](docs/credential-security.md) and [Security policy](SECURITY.md) before using the prototype with a work account. Microsoft Authentication Extensions documents that its Windows persistence uses DPAPI: [MSAL Extensions](https://github.com/AzureAD/microsoft-authentication-extensions-for-python).
 
 ## Install
 
-Download the installer from the [latest GitHub release](https://github.com/Anders0lesen/azure-extensible-systray-monitor/releases/latest) and run `AzureHealthBeacon-Setup-v0.7.0.exe`. It installs for the current Windows user, adds a Start Menu entry, and does not request administrator access.
+Download the installer from the [latest GitHub release](https://github.com/Anders0lesen/azure-extensible-systray-monitor/releases/latest) and run `AzureHealthBeacon-Setup-v0.7.1.exe`. It installs for the current Windows user, adds a Start Menu entry, and does not request administrator access.
 
 The public-preview installer is not Authenticode code-signed yet, so Windows may show **Unknown publisher**. The release includes a SHA-256 checksum and GitHub build-provenance attestation. Do not install a copy obtained from anywhere except this repository.
 
@@ -78,7 +78,7 @@ The application artwork is used for Windows branding only. The tray deliberately
 
 ## Signal sources and rules
 
-Version `0.7.0` supports six strict, data-only signal sources:
+Version `0.7.1` supports six strict, data-only signal sources:
 
 - **Provisioning state:** confirm that one resource's `properties.provisioningState` matches the configured healthy states.
 - **VM power state:** read one virtual machine's live instance view and choose which `PowerState/...` values are healthy.
@@ -93,7 +93,7 @@ You can edit or write your own [Resource Graph query](https://learn.microsoft.co
 
 Authentication, authorization, connectivity, timeout, invalid-query, and incomplete-scope errors are grey. If one tenant produces a confirmed finding while another tenant cannot be checked, red wins and the result says the scope was partial.
 
-Native property rules ask Azure CLI for only the explicitly selected property. The full resource document is not stored, logged, or exported.
+Native property rules read directly from Azure Resource Manager and retain only the explicitly selected property. The full resource document is not stored, logged, or exported.
 
 ## Rule packs
 
@@ -122,7 +122,6 @@ Requirements:
 - Windows 11
 - Python 3.12
 - .NET SDK 10
-- Machine-wide [Azure CLI](https://learn.microsoft.com/cli/azure/install-azure-cli-windows)
 
 ```powershell
 ./build.ps1
@@ -138,7 +137,7 @@ With Inno Setup 7 installed, build the per-user installer as well:
 
 ## Windows startup
 
-Both **Start Azure Health Beacon when I sign in to Windows** and **Start minimized in the notification area** are explicitly opt-in under **Settings**. Uninstalling the app removes its startup entry.
+Both **Start with Windows** and **Start minimized in the notification area** are explicitly opt-in under **Settings**. Uninstalling the app removes its startup entry.
 
 ## Prototype limitations
 

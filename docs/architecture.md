@@ -2,7 +2,7 @@
 
 Azure Health Beacon separates six concerns:
 
-1. **Connection lifecycle** — isolated Azure CLI profile, onboarding gate, 14-day lease, renewal, and deletion.
+1. **Connection lifecycle** — app-owned DPAPI-encrypted MSAL cache, onboarding gate, 14-day lease, renewal, and deletion.
 2. **Signal adapters** — provisioning state, VM instance view, constrained ARM property, Resource Graph, Log Analytics/Application Insights, and Azure Monitor metric implementations returning healthy, failed, or unconnectable.
 3. **Rule lifecycle** — draft, test, apply, active, export/import, and delete.
 4. **Aggregation state machine** — maps rule results and active work to tray states.
@@ -12,13 +12,15 @@ Azure Health Beacon separates six concerns:
 Rule definitions are data, not executable extensions. The source registry provides one stable contract while reviewed adapters own discovery, validation, execution, and result normalization. KQL is passed as one argument to Azure's read-only Resource Graph or Azure Monitor query surface and is never executed by a local shell or interpreter. New adapters must be implemented and reviewed in source with an explicit schema and tests.
 
 ```text
-Windows shell -> private JSON-lines bridge -> source registry -> reviewed Azure adapter -> normalized findings
+Windows shell -> private JSON-lines bridge -> source registry -> reviewed Azure REST adapter -> normalized findings
                  | provisioning  | zero findings = healthy
                  | VM power      | confirmed finding = red
                  | ARM property  | missing access/data = grey
                  | graph KQL     | credentials never enter the rule
                  | logs KQL
                  ` metric
+
+The REST adapter acquires delegated OAuth tokens silently from the app-owned encrypted cache and calls fixed Microsoft HTTPS surfaces directly. Azure CLI, PowerShell, local shells, user-selectable endpoints, and raw-token bridge operations are absent.
 ```
 
 ## State precedence

@@ -1,85 +1,79 @@
 # Security policy
 
-Security is a primary design constraint because Azure Health Beacon initiates authenticated Azure operations from a long-running desktop process.
+Security is a primary design constraint because Azure Health Beacon performs authenticated Azure operations from a long-running Windows process.
 
 ## Prototype status
 
-No version should be treated as production-approved or enterprise-supported until it has been reviewed, scanned, code-signed, and released through an approved pipeline.
+No release is production-approved or enterprise-supported until it has been independently reviewed, scanned, Authenticode-signed, and distributed through an approved pipeline.
 
 ## Reporting a vulnerability
 
-Do not open a public issue containing credentials, tokens, tenant details, subscription IDs, resource IDs, internal hostnames, or other confidential material.
-
-Use GitHub private vulnerability reporting/security advisories. If unavailable, contact the repository owner through an established private channel and provide only the minimum necessary evidence.
+Do not open a public issue containing credentials, tokens, tenant details, subscription IDs, resource IDs, internal hostnames, or confidential query results. Use GitHub private vulnerability reporting/security advisories or an established private channel.
 
 ## Non-negotiable rules
 
-- Never add a username/password form to the Beacon.
-- Never request, print, persist, export, or log access or refresh tokens.
+- Never add a username/password or MFA field.
+- Never print, log, export, or return access or refresh tokens.
+- Never permit plaintext credential-cache fallback.
 - Never support client secrets, storage keys, SAS tokens, PATs, connection strings, or private keys in rules.
-- Never run imported commands, scripts, or arbitrary URLs. Imported KQL may be sent only to Azure Resource Graph or the selected Azure Monitor Logs workspace after review and a live test. Native property paths use a constrained data-only grammar. Metric rules may query only the configured ARM resource and metric definition.
-- Never run `az account set` or alter the user's global Azure CLI context.
-- Never read, clear, log out, or delete `%USERPROFILE%\.azure`.
+- Never execute Azure CLI, PowerShell, imported commands, scripts, or arbitrary URLs.
+- Never read or mutate `%USERPROFILE%\.azure`.
 - Never make the 14-day authorization lease configurable.
-- Never enable background update checks or automatic installation by default.
-- Never accept update metadata or binaries from a repository, host, tag, or asset name outside the pinned release format.
-- Never publish real configuration, logs, rule packs, or build artifacts without inspection.
+- Never enable background update checks or automatic updates by default.
+- Never publish real configuration, logs, rule packs, or local identity files.
 
 ## Authentication boundary
 
-The Beacon launches Microsoft Azure CLI's interactive login using an isolated `AZURE_CONFIG_DIR` under its own local app-data directory. Microsoft sign-in/WAM handles passwords, Windows Hello, Conditional Access, and MFA. The Beacon receives success/failure and non-secret subscription metadata, not the password or MFA response.
+Interactive authentication uses MSAL's authorization-code flow with PKCE and Microsoft's browser UI. The app is a public client and contains no client secret. Passwords, Windows Hello, Conditional Access, and MFA stay on Microsoft's surface.
 
-The Windows shell starts one private monitoring-engine child process with redirected anonymous stdin/stdout pipes. The bridge accepts only fixed application commands and data-only JSON. It has no listener, executable-command field, token-return operation, or raw credential response. Unexpected errors are redacted before they cross into the shell.
+MSAL's reusable token cache and the account selector metadata are stored only under `%LOCALAPPDATA%\AzureHealthBeacon\identity`. Both are encrypted with Windows DPAPI CurrentUser through Microsoft Authentication Extensions. Construction fails if encrypted persistence is unavailable; unencrypted fallback is forbidden.
 
-For an MSI Azure CLI installation, the Beacon invokes the Azure CLI Python module directly from `Program Files`. Imported rule values never pass through `cmd.exe`.
+The Windows shell starts one private monitoring-engine child through redirected anonymous stdin/stdout pipes. The bridge has a fixed data-only JSON command set, no listener, no executable-command field, and no token-return operation. Tokens remain inside the engine and only briefly enter direct HTTPS `Authorization` headers.
 
 ## Fourteen-day hard boundary
 
-The Beacon records when its Azure connection was established. At exactly 14 days or later:
+At exactly 14 days or later:
 
-1. Monitoring is blocked.
-2. In-memory results are cleared.
-3. The complete app-owned `azure-cli` directory is recursively deleted.
-4. Tenant/subscription bindings and the timestamp are cleared.
-5. The tray becomes grey and setup is required again.
+1. monitoring is blocked;
+2. connection metadata is cleared;
+3. the app-owned encrypted `identity` directory is hard-deleted;
+4. any legacy v0.7.0 `azure-cli` directory is hard-deleted;
+5. the tray becomes grey and setup is required again.
 
-Deletion is fail-closed: the connection is marked purge-pending and monitoring is blocked before deletion starts. If Windows temporarily prevents removal because a file is busy, setup remains blocked and retries deletion before allowing another login.
-
-Rules are retained. The duration is a constant in source and has no configuration field.
-
-WAM is a Windows authentication broker and can independently retain the Windows account for SSO. Removing that account would affect Windows and other managed applications, so the Beacon intentionally does not attempt it. “Delete Azure connection” means delete all Beacon-owned authorization state, not remove a corporate identity from Windows.
+Deletion is fail-closed: a purge-pending flag is stored before removal. Rules remain intact. Removing a Windows work account is out of scope because it would affect Windows and other managed applications.
 
 ## Stored local data
 
-`%LOCALAPPDATA%\AzureHealthBeacon\checks.json` contains non-secret scope metadata, the connection timestamp, rules, and scheduling settings. The isolated Azure CLI profile lives below the same parent directory. Writes are validated and atomic, with one configuration backup.
+- `checks.json`: non-secret scope metadata, connection timestamp, rules, scheduling, theme, and update choices.
+- `identity/token-cache.bin`: DPAPI-encrypted MSAL token cache.
+- `identity/account-state.bin`: DPAPI-encrypted account selector metadata.
+- `beacon.log`: rotating operational messages without successful Azure response bodies or tokens.
+- `updates`: verified installer downloads.
 
-Logs rotate and do not contain successful Azure response bodies. Azure CLI errors are truncated and scrubbed for bearer-token, JWT, SAS-signature, and access-token patterns.
+DPAPI protects at rest against other accounts and offline copying. It cannot protect against malicious code already executing as the same Windows user.
 
 ## Least-data operations
 
-- Setup validation runs a read-only resource-group list scoped to the selected subscription and returns only the count.
-- Provisioning checks request only `properties.provisioningState` as text.
-- VM power checks request the selected VM's read-only instance view and retain only its `PowerState/...` code.
-- Generic property checks request only the explicitly selected constrained property path; the complete ARM document is not retained, logged, or exported.
-- Every lookup includes its subscription ID.
-- Optional tenant pins are verified before lookup.
-- Resource Graph calls explicitly enumerate enabled subscriptions, are split by tenant, and retain only compact finding previews in memory; response bodies are never logged.
-- Log Analytics rules are sent directly to Azure Monitor through the trusted Azure CLI module. The app appends a 26-row server-side cap, retains at most 25 compact previews in memory, and never writes result rows to configuration, exports, or logs.
-- Signal discovery retains only workspace/table/resource/metric metadata in memory for the open window. Resource listing is capped at 1,000 items per refresh. Discovery results are not persisted.
-- Metric checks retain only the numeric samples required to evaluate the configured reducer and threshold. No-data responses are grey rather than assumed healthy.
+- Setup validates the selected subscription with a read-only resource-group request.
+- Provisioning and generic property checks fetch the resource document directly from ARM, retain only the selected value, and do not persist the document.
+- VM checks retain only the live `PowerState/...` value.
+- Resource Graph requests enumerate explicit accessible subscription IDs and retain at most 25 compact findings in memory.
+- Log Analytics/Application Insights KQL goes directly to `api.loganalytics.io`; the app adds a 26-row cap and persists no rows.
+- Metric checks retain only samples needed for the configured reducer and threshold. No data is grey, not healthy.
+- Discovery data remains in memory for the open window and is capped at 1,000 resources.
+
+All network calls use fixed Microsoft HTTPS endpoints. Provider-specific resource API versions are discovered from ARM metadata; rules cannot choose an endpoint or API version.
 
 ## Update boundary
 
-Update mode defaults to `manual`. Manual mode performs no background update requests. `notify` and `automatic` modes are persisted only after the user selects them; entering automatic mode requires an additional confirmation.
+Update mode defaults to manual. Notify-only and automatic modes require explicit opt-in; automatic installation requires an additional confirmation.
 
-The updater reads only the stable `latest` release from `Anders0lesen/azure-extensible-systray-monitor`. It rejects drafts, prereleases, non-semantic tags, unexpected release URLs, missing assets, redirects outside GitHub's release-asset hosts, oversized responses, and unexpected filenames.
+Updates are pinned to the stable release in `Anders0lesen/azure-extensible-systray-monitor`. The installer must match both GitHub's asset SHA-256 digest and the separately published checksum. Release builds receive GitHub artifact-provenance attestations. These controls do not replace Authenticode publisher signing.
 
-Before execution, the downloaded installer must match both GitHub's API-provided SHA-256 asset digest and the release's checksum file. Release builds also receive a GitHub artifact-provenance attestation. These controls do not replace Authenticode publisher signing; the current public preview remains unsigned and should not be enterprise-deployed until signing is added.
-
-No Azure credential, rule, tenant ID, subscription ID, or isolated Azure CLI data is included in update requests.
+No Azure authorization, identity cache, tenant/subscription binding, rules, or query text is included in update requests.
 
 ## Rule-pack boundary
 
-Rule packs are strict data-only JSON. They may contain constrained native property paths, Resource Graph or Azure Monitor KQL, and metric conditions but never local executable code or query results. Imports reject unknown fields, arbitrary commands, scripts, non-Azure links, credential-like keys, common secret formats, oversized files, excessive rule counts, and duplicate IDs. Imported rules are disabled until reviewed, tested, and explicitly applied.
+Rule packs are strict data-only JSON. Imports reject unknown fields, commands, scripts, non-Azure links, credential-like keys, common secret formats, excessive sizes/counts, and duplicate IDs. Imported rules are disabled until reviewed, tested live, and explicitly applied.
 
-For details, see [Credential security](docs/credential-security.md).
+See [Credential security](docs/credential-security.md).

@@ -47,7 +47,7 @@ Removes only the selected definition after confirmation. It does not change auth
 
 ### Delete Azure connection
 
-Deletes `%LOCALAPPDATA%\AzureHealthBeacon\azure-cli`, clears saved scope/timestamp, stops monitoring, and retains rules. It never changes `%USERPROFILE%\.azure` or the Windows account.
+Deletes `%LOCALAPPDATA%\AzureHealthBeacon\identity`, clears saved scope/timestamp, stops monitoring, and retains rules. It also removes a legacy v0.7.0 `azure-cli` directory if present. The user's `%USERPROFILE%\.azure` profile and Windows account are outside the app's scope.
 
 The connection is blocked before deletion begins. If a file lock prevents immediate deletion, the app records a purge-pending state and refuses login/monitoring until deletion succeeds.
 
@@ -58,6 +58,6 @@ The installer does not add services, drivers, or scheduled tasks. The app can ad
 1. Exit from the tray menu.
 2. Open **Settings → Apps → Installed apps**.
 3. Uninstall **Azure Health Beacon**.
-4. Delete `%LOCALAPPDATA%\AzureHealthBeacon` only if rules, logs, configuration, downloaded updates, and the isolated Azure CLI profile should also be removed.
+4. Delete `%LOCALAPPDATA%\AzureHealthBeacon` only if rules, logs, configuration, downloaded updates, and the encrypted identity cache should also be removed.
 
-Uninstall removes the app's Windows startup value but leaves local data behind by design, allowing a later reinstall to retain rules. Use **Delete Azure connection** before uninstall when the app-owned Azure CLI profile must be purged without removing retained rules.
+Uninstall removes the app's Windows startup value but leaves local data behind by design, allowing a later reinstall to retain rules. Use **Delete Azure connection** before uninstall when the app-owned encrypted identity cache must be purged without removing retained rules.

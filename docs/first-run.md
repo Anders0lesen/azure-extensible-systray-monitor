@@ -1,37 +1,37 @@
 # First-run setup
 
-Azure Health Beacon blocks monitoring until authentication and Azure access have been validated.
+Azure Health Beacon blocks monitoring until Microsoft sign-in and live Azure access have been validated.
 
 ## 1. Setup required
 
-On a new profile, the wizard opens automatically and the tray icon is grey. Closing the wizard leaves the Beacon uninitialized; reopen it from **Azure connection setup** in the tray menu. No scheduled checks run.
+On a new profile, the wizard opens automatically and the tray is grey. Closing it leaves the Beacon uninitialized. No scheduled checks run.
+
+When upgrading from v0.7.0, existing rules and settings are retained, but the legacy Azure CLI authorization is deliberately not imported. One fresh sign-in creates the v0.7.1 encrypted identity cache.
 
 ## 2. Sign in with Microsoft
 
-Select **Sign in with Microsoft**. The Beacon starts Azure CLI's interactive login in an app-isolated profile without passing a username or password. Microsoft handles the account, password, Windows Hello, Conditional Access, and MFA.
+Select **Sign in with Microsoft**. The Beacon starts Microsoft's browser-based OAuth authorization-code flow with PKCE. Microsoft handles the account, password, Windows Hello, Conditional Access, and MFA.
 
-An optional tenant ID can be supplied for multi-tenant accounts. Login uses `--output none`; the Beacon does not request token output.
+The Beacon does not execute Azure CLI and does not offer username, password, client-secret, or token fields. An optional tenant ID can narrow the initial sign-in for multi-tenant accounts.
+
+After success, MSAL persists the reusable authorization only as Windows DPAPI CurrentUser ciphertext in the app-owned `identity` directory. If encrypted persistence is unavailable, setup fails rather than writing plaintext.
 
 ## 3. Choose a subscription
 
-After login, the Beacon reads enabled subscription names, IDs, and tenant IDs from its isolated Azure CLI profile. It does not run `az account set`.
+The Beacon uses direct Azure Resource Manager HTTPS requests to enumerate enabled subscriptions across tenants available to the signed-in account. It does not read or change a global developer-tool context.
 
 ## 4. Verify live access
 
-Select **Test credentials and finish setup**. The Beacon performs a read-only request scoped to the selected subscription and returns only its resource-group count:
+Select **Test credentials and finish setup**. The Beacon performs a live, read-only resource-group request scoped to the selected subscription. Only the resulting count is shown.
 
-```text
-az group list --subscription <subscription-id> --query length(@) --output tsv
-```
-
-If the identity has narrower resource-level access but cannot list resource groups, setup currently fails. This is a known prototype limitation.
+If the identity has narrow resource-only RBAC and cannot list resource groups, setup currently fails. Supporting alternate validation targets remains a known prototype limitation.
 
 ## 5. Discover, test, and apply the first rule
 
-Select **Add a check**. The source page shows all six signal surfaces with nothing preselected. Choose one, use its resource/workspace/metric discovery controls where relevant, define what should return a finding, choose **Test without saving**, inspect the live result, and then select **Save and enable**. Editing or renaming any field invalidates the test and requires another test before saving.
+Select **Add a check**. All six signal sources appear with nothing preselected. Choose a source, use the relevant Azure discovery picker, define the finding, select **Test without saving**, inspect the live result, and then select **Save and enable**.
 
-Discovery reads metadata only and does not save it. KQL result rows remain in memory for the current evaluation and never enter the configuration or a rule-pack export.
+Editing or renaming after a test invalidates the test receipt. Discovery metadata and compact query findings remain in memory and never enter the encrypted identity cache.
 
 ## Renewal
 
-After 14 days, the isolated Azure CLI profile and scope binding are deleted automatically. Rules remain, the tray turns grey, and the full sign-in/validation sequence is required again.
+After 14 days, the complete app-owned encrypted identity cache and scope binding are deleted automatically. Rules remain, the tray becomes grey, and full sign-in/validation is required again.

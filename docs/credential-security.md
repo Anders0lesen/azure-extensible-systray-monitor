@@ -2,67 +2,91 @@
 
 ## Goal
 
-The safest application-owned credential database is no credential database. Azure Health Beacon delegates interactive OAuth and token maintenance to Microsoft Azure CLI/WAM and never stores a username, password, MFA response, client secret, certificate, access token, or refresh token in its own configuration.
+Azure Health Beacon is self-contained. It does not execute Azure CLI, read `%USERPROFILE%\.azure`, inherit a developer login, or require Azure CLI to be installed.
+
+Microsoft's browser handles the account, password, Windows Hello, Conditional Access, and MFA. The Beacon receives the resulting OAuth authorization in process memory and persists the reusable session only through Microsoft's MSAL Extensions encrypted persistence.
+
+## Identity type
+
+This is delegated user OAuth for a Windows desktop application, not Azure Managed Identity. Managed Identity is for workloads hosted on supported Azure resources and is not available to an ordinary Windows 11 tray process.
+
+The app uses Microsoft Azure's public development client ID, the same default documented for Azure Identity interactive browser credentials. It is a public client and has no client secret, certificate, or private key to ship or hide. Authorization uses the browser-based authorization-code flow with PKCE.
 
 ## Data flow
 
 ```text
 User
-  -> Microsoft sign-in / Windows Web Account Manager
-      -> app-isolated Azure CLI profile
-          -> read-only Azure Resource Manager or Resource Graph request
-              -> non-secret status returned to Azure Health Beacon
+  -> Microsoft browser sign-in (password, Hello, CA, MFA remain there)
+      -> MSAL authorization-code + PKCE
+          -> DPAPI-encrypted app-owned token cache
+              -> direct HTTPS to Azure Resource Manager / Resource Graph / Monitor
+                  -> normalized status returned to the private engine
 ```
 
-The password and MFA response do not pass through Beacon fields, arguments, configuration, rule packs, or logs.
+No token is returned through the WPF bridge or placed in a rule, configuration file, export, update request, or log.
 
-## Isolation
+## App-owned encrypted storage
 
-Every Azure CLI child process receives:
+The complete credential-bearing state lives under:
 
 ```text
-AZURE_CONFIG_DIR=%LOCALAPPDATA%\AzureHealthBeacon\azure-cli
+%LOCALAPPDATA%\AzureHealthBeacon\identity\
+  token-cache.bin
+  account-state.bin
 ```
 
-The normal `%USERPROFILE%\.azure` profile remains outside the Beacon's scope. Deleting or expiring the Beacon connection removes only the isolated directory.
+Both files are encrypted with Windows DPAPI for the current Windows user through [Microsoft Authentication Extensions for Python](https://github.com/AzureAD/microsoft-authentication-extensions-for-python). There is deliberately no plaintext fallback. If DPAPI encryption is unavailable, login fails closed.
+
+`token-cache.bin` contains MSAL's encrypted token cache. `account-state.bin` contains the encrypted home-account identifier, username, and home tenant needed to select the correct cached account. The non-secret selected tenant/subscription binding and 14-day timestamp remain in `checks.json`.
+
+DPAPI CurrentUser encryption protects data at rest from other Windows accounts and offline copying. It does not protect against malicious code already executing as the same Windows user; that process could call DPAPI or inspect this process. That is the honest Windows security boundary.
+
+## Token handling
+
+Access tokens must briefly exist in private engine memory to authorize HTTPS requests. They are:
+
+- requested silently from the encrypted cache during monitoring;
+- placed only in the HTTPS `Authorization` header;
+- never printed, logged, exported, or sent through anonymous IPC;
+- removed from temporary header/token variables immediately after each request;
+- never accepted from rule fields or configuration.
+
+Azure responses and exceptions are reduced and redacted before crossing into the WPF shell.
 
 ## Fourteen-day lease
 
-The connection-establishment time is stored as UTC metadata. The maximum age is a source-code constant of exactly 14 days. It is not represented as a user/configuration option.
+The connection-establishment time is UTC metadata. Its maximum age is a source-code constant of exactly 14 days and has no setting.
 
-Expiry deletes the isolated directory and all connection metadata before any further check can run. Reauthentication creates a new 14-day lease.
+At expiry:
 
-The purge is fail-closed. A purge-pending flag is persisted before deletion; failure leaves monitoring and new login blocked until the old isolated directory is successfully removed.
+1. monitoring is blocked;
+2. connection metadata is cleared;
+3. the complete app-owned `identity` directory is recursively deleted;
+4. any legacy v0.7.0 `azure-cli` profile is deleted;
+5. setup and fresh Microsoft sign-in are required.
 
-## What is stored
+Deletion is fail-closed. A purge-pending marker is saved before removal; failure leaves monitoring and login blocked until deletion succeeds. Rules are retained.
 
-| Data | Stored? | Location/reason |
+## Stored-data summary
+
+| Data | Stored? | Protection/location |
 |---|---:|---|
-| Username/password | No | Microsoft sign-in only |
-| MFA/Windows Hello response | No | Microsoft sign-in only |
-| Client secret/private key | No | Unsupported |
-| Azure CLI authorization cache | Temporarily | Isolated profile, hard-deleted after at most 14 days |
-| Tenant/subscription ID and name | Yes | Non-secret scope binding in `checks.json` |
-| Resource IDs and names | Yes | Rule definitions |
-| Connection timestamp | Yes | Enforces the hard lease |
+| Password, Windows Hello, MFA response | No | Microsoft sign-in only |
+| Client secret, certificate, private key | No | Unsupported |
+| OAuth access/refresh-token cache | Up to 14 days | DPAPI-encrypted `identity/token-cache.bin` |
+| Account selector metadata | Up to 14 days | DPAPI-encrypted `identity/account-state.bin` |
+| Tenant/subscription selection | Yes | Non-secret metadata in `checks.json` |
+| Resource IDs, KQL, thresholds | Yes | Rule definitions and rule-pack exports |
+| Successful Azure response bodies | No | Reduced to in-memory results |
 
-Identifiers are not authentication secrets, but they can expose internal structure.
+Identifiers and KQL are not authentication secrets, but they can reveal internal infrastructure names and must still be shared carefully.
 
-## Why not Windows Credential Manager or a custom DPAPI vault?
+## Upgrade from v0.7.0
 
-The Beacon does not need to invent a second credential format or token-handling implementation. Azure CLI on Windows already integrates with Microsoft's broker and encrypted Windows token-cache mechanisms. An additional app-owned secret vault would add parsing, logging, backup, migration, and deletion risks.
+v0.7.0 used a Beacon-isolated Azure CLI profile. v0.7.1 does not import or reuse that authorization state. On first v0.7.1 start it deletes the legacy profile, retains rules and settings, and requires one fresh Microsoft sign-in to establish the new DPAPI-encrypted cache.
 
-## Honest WAM limit
+## References
 
-Windows WAM controls its own account knowledge and SSO behavior. Deleting the Beacon profile guarantees that the Beacon retains no local Azure CLI profile and refuses further work until setup. It does not guarantee that Windows forgets the corporate account or asks for a password instead of Windows Hello/SSO next time.
-
-Removing the Windows work account is deliberately out of scope because it affects the OS and other managed applications.
-
-## Process protections
-
-- Machine-wide Azure CLI under `Program Files` is preferred.
-- MSI Azure CLI is invoked through its Python module, not its `.cmd` wrapper.
-- Arguments are a list, never a concatenated shell string.
-- Rules cannot select commands or executables. KQL is accepted only for Azure's read-only query surfaces and never reaches a local shell. Generic ARM property paths use a constrained field/index grammar and request only the selected value.
-- Portal links must use exactly `https://portal.azure.com`.
-- Resource Graph response bodies are not logged; at most 25 compact findings are kept in memory for display.
+- [MSAL Python token-cache serialization](https://learn.microsoft.com/entra/msal/python/advanced/msal-python-token-cache-serialization)
+- [Microsoft Authentication Extensions encrypted persistence](https://github.com/AzureAD/microsoft-authentication-extensions-for-python)
+- [Azure Identity token caching](https://learn.microsoft.com/azure/developer/python/sdk/authentication/additional-configurations#persist-the-token-cache)
