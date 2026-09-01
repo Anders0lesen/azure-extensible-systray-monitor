@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import os
 import re
-import shutil
 import subprocess
 import tempfile
 import time
@@ -13,10 +12,15 @@ from datetime import datetime
 from pathlib import Path
 from statistics import fmean
 
+from .azure_rest import execute_azure_operation
 from .config import app_data_dir
+from .identity import (
+    delete_identity_state,
+    identity_state_available,
+    interactive_sign_in,
+)
 from .model import CheckDefinition, CheckFinding, CheckResult, CheckState
 
-CREATE_NO_WINDOW = 0x08000000 if os.name == "nt" else 0
 RESOURCE_GRAPH_URL = (
     "https://management.azure.com/providers/Microsoft.ResourceGraph/resources"
     "?api-version=2022-10-01"
@@ -76,89 +80,26 @@ def redact_error(text: str) -> str:
     return _redact(text)
 
 
-def _azure_cli_command() -> list[str] | None:
-    # Prefer the machine-wide Azure CLI install over a same-named executable
-    # supplied by the working directory or an earlier, user-writable PATH entry.
-    candidates: list[tuple[str, str]] = []
-    for variable in ("ProgramFiles", "ProgramFiles(x86)"):
-        base = os.environ.get(variable)
-        if base:
-            root = os.path.join(base, "Microsoft SDKs", "Azure", "CLI2")
-            candidates.append(
-                (os.path.join(root, "wbin", "az.cmd"), os.path.join(root, "python.exe"))
-            )
-    for batch_file, python_executable in candidates:
-        if os.path.isfile(batch_file) and os.path.isfile(python_executable):
-            # Calling the CLI module directly avoids passing imported rule data
-            # through cmd.exe/batch-file expansion.
-            return [os.path.abspath(python_executable), "-IBm", "azure.cli"]
-    discovered = shutil.which("az.exe")
-    if not discovered:
-        return None
-    resolved = os.path.abspath(discovered)
-    if os.path.dirname(resolved).casefold() == os.getcwd().casefold():
-        return None
-    return [resolved]
-
-
 def _run_az(arguments: list[str], timeout: int) -> subprocess.CompletedProcess[str]:
-    prefix = _azure_cli_command()
-    if not prefix:
-        raise FileNotFoundError(
-            "A trusted machine-wide Azure CLI installation was not found"
-        )
-    command = [*prefix, *arguments]
-    environment = os.environ.copy()
-    isolated_dir = isolated_azure_config_dir()
-    isolated_dir.mkdir(parents=True, exist_ok=True)
-    environment["AZURE_CONFIG_DIR"] = str(isolated_dir)
-    environment["AZURE_CORE_COLLECT_TELEMETRY"] = "false"
-    environment["AZURE_CORE_ONLY_SHOW_ERRORS"] = "true"
-    return subprocess.run(
-        command,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        timeout=timeout,
-        creationflags=CREATE_NO_WINDOW,
-        env=environment,
-        check=False,
-    )
+    """Compatibility boundary for the fixed internal operation set.
 
-
-def isolated_azure_config_dir() -> Path:
-    return app_data_dir() / "azure-cli"
+    Despite the historical name, this performs direct OAuth-authenticated HTTPS
+    requests and never discovers, starts, or reads state from Azure CLI.
+    """
+    return execute_azure_operation(arguments, timeout)
 
 
 def delete_isolated_azure_state() -> None:
-    """Delete only the Beacon-owned Azure CLI profile, never the user's normal CLI profile."""
-    parent = app_data_dir().resolve()
-    target = isolated_azure_config_dir().resolve()
-    if target.parent != parent or target.name != "azure-cli":
-        raise RuntimeError("Refusing to delete an unexpected Azure CLI profile path")
-    if target.exists():
-        shutil.rmtree(target)
+    """Delete the Beacon's encrypted cache and any legacy isolated CLI profile."""
+    delete_identity_state()
 
 
 def interactive_login(
     tenant_hint: str = "", timeout_seconds: int = 300
 ) -> tuple[bool, str]:
-    """Open Microsoft's interactive sign-in; no password or token is returned to the Beacon."""
-    arguments = ["login", "--output", "none", "--only-show-errors"]
-    if tenant_hint.strip():
-        arguments.extend(["--tenant", tenant_hint.strip()])
-    try:
-        completed = _run_az(arguments, timeout_seconds)
-    except subprocess.TimeoutExpired:
-        return False, "Microsoft sign-in did not complete within five minutes."
-    except (FileNotFoundError, OSError) as error:
-        return False, _redact(str(error))
-    if completed.returncode != 0:
-        return False, _redact(
-            completed.stderr or "Microsoft sign-in was not completed."
-        )
-    return True, "Microsoft sign-in completed."
+    """Open Microsoft OAuth; credentials remain in app-owned DPAPI ciphertext."""
+    success, message = interactive_sign_in(tenant_hint, timeout_seconds)
+    return success, _redact(message)
 
 
 def list_subscriptions(
@@ -190,7 +131,7 @@ def list_subscriptions(
             if item.get("id") and item.get("tenantId")
         ]
     except (json.JSONDecodeError, KeyError, TypeError, AttributeError):
-        return [], "Azure CLI returned an unreadable subscription list."
+        return [], "Azure returned an unreadable subscription list."
     subscriptions.sort(key=lambda item: (item.name.casefold(), item.id))
     if not subscriptions:
         return (
@@ -480,12 +421,12 @@ def run_provisioning_check(
     definition: CheckDefinition, *, timeout_seconds: int = 30, retry_count: int = 2
 ) -> CheckResult:
     portal_url = _portal_url(definition)
-    if not _azure_cli_command():
+    if not identity_state_available():
         return CheckResult(
             definition.id,
             definition.name,
             CheckState.UNCONNECTABLE,
-            "A trusted machine-wide Azure CLI installation was not found.",
+            "The app-owned encrypted Azure connection is missing.",
             portal_url=portal_url,
         )
 
@@ -552,16 +493,14 @@ def run_provisioning_check(
                     portal_url=portal_url,
                 )
             last_error = _redact(
-                completed.stderr or completed.stdout or "Azure CLI lookup failed."
+                completed.stderr or completed.stdout or "Azure lookup failed."
             )
             lowered = last_error.casefold()
             if any(
                 marker in lowered
                 for marker in ("az login", "login", "authentication", "credential")
             ):
-                last_error = (
-                    "Azure sign-in is required. Open Azure CLI and run az login."
-                )
+                last_error = "The app-owned Azure connection needs renewal."
         if attempt < retry_count:
             time.sleep(min(2**attempt, 4))
     return CheckResult(
@@ -994,6 +933,8 @@ def run_log_analytics_check(
         bounded_query,
         "--timespan",
         f"PT{definition.lookback_minutes}M",
+        "--tenant",
+        definition.tenant_id,
         "--output",
         "json",
         "--only-show-errors",

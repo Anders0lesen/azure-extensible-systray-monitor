@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import inspect
 import io
 import json
 import subprocess
@@ -8,11 +9,12 @@ import tempfile
 import unittest
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
+import azure_health_beacon.azure as azure_module
+import azure_health_beacon.azure_rest as azure_rest_module
 from azure_health_beacon.azure import (
     AzureSubscription,
-    _run_az,
     delete_isolated_azure_state,
     interactive_login,
     list_subscriptions,
@@ -35,6 +37,14 @@ from azure_health_beacon.config import (
     parse_resource_reference,
     save_config,
     validate_definition,
+)
+from azure_health_beacon.identity import (
+    _encrypted_persistence,
+    account_state_path,
+    identity_state_available,
+    interactive_sign_in,
+    token_cache_path,
+    verify_encrypted_storage,
 )
 from azure_health_beacon.model import (
     BeaconState,
@@ -108,9 +118,10 @@ class BridgeTests(unittest.TestCase):
 
     @patch("azure_health_beacon.bridge.save_config")
     @patch("azure_health_beacon.bridge.run_check")
+    @patch("azure_health_beacon.bridge.identity_state_available", return_value=True)
     @patch("azure_health_beacon.bridge.load_config")
     def test_successful_test_issues_one_save_receipt(
-        self, load: object, run: object, save: object
+        self, load: object, _identity: object, run: object, save: object
     ) -> None:
         config = AppConfig(onboarding_completed=True)
         mark_connection_established(config)
@@ -130,8 +141,11 @@ class BridgeTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Test the current rule"):
             bridge.save_rule({"rule": self.rule_payload()})
 
+    @patch("azure_health_beacon.bridge.identity_state_available", return_value=True)
     @patch("azure_health_beacon.bridge.load_config")
-    def test_snapshot_contains_no_credential_material(self, load: object) -> None:
+    def test_snapshot_contains_no_credential_material(
+        self, load: object, _identity: object
+    ) -> None:
         load.return_value = AppConfig(  # type: ignore[attr-defined]
             onboarding_completed=True,
             azure_subscription_id="subscription",
@@ -372,51 +386,88 @@ class ConfigurationTests(unittest.TestCase):
 
 
 class AzureAuthenticationTests(unittest.TestCase):
-    @patch("azure_health_beacon.azure.subprocess.run")
-    @patch("azure_health_beacon.azure._azure_cli_command")
-    @patch("azure_health_beacon.azure.app_data_dir")
-    def test_every_cli_call_uses_the_isolated_profile(
-        self, data_dir, cli_command, run
+    def test_runtime_has_no_azure_cli_execution_path(self) -> None:
+        source = inspect.getsource(azure_module) + inspect.getsource(azure_rest_module)
+        for forbidden in (
+            "subprocess.run(",
+            "subprocess.Popen(",
+            "shutil.which(",
+            "AZURE_CONFIG_DIR",
+        ):
+            self.assertNotIn(forbidden, source)
+
+    @patch("azure_health_beacon.identity.app_data_dir")
+    def test_encrypted_cache_and_lock_self_test_leaves_no_probe(
+        self, data_dir: Mock
     ) -> None:
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory)
             data_dir.return_value = base
-            cli_command.return_value = ["trusted-az.exe"]
-            run.return_value = subprocess.CompletedProcess([], 0, "", "")
-            _run_az(["version"], 10)
-            environment = run.call_args.kwargs["env"]
-            self.assertEqual(Path(environment["AZURE_CONFIG_DIR"]), base / "azure-cli")
-            self.assertNotEqual(
-                environment["AZURE_CONFIG_DIR"], str(Path.home() / ".azure")
+            self.assertEqual(
+                verify_encrypted_storage(), "windows-dpapi-current-user"
             )
-            self.assertEqual(run.call_args.args[0], ["trusted-az.exe", "version"])
+            self.assertFalse((base / "identity").exists())
 
-    @patch("azure_health_beacon.azure.app_data_dir")
+    @patch("azure_health_beacon.identity.msal.PublicClientApplication")
+    @patch("azure_health_beacon.identity.app_data_dir")
+    def test_interactive_login_persists_only_dpapi_ciphertext(
+        self, data_dir, application
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            data_dir.return_value = base
+            def authorize(**_kwargs):
+                _encrypted_persistence(token_cache_path()).save(
+                    '{"AccessToken":"plaintext-access-token-must-not-survive"}'
+                )
+                return {
+                    "access_token": "plaintext-access-token-must-not-survive",
+                    "account": {
+                        "home_account_id": "home-account",
+                        "username": "engineer@example.test",
+                    },
+                    "id_token_claims": {"tid": "tenant-id"},
+                }
+
+            application.return_value.acquire_token_interactive.side_effect = authorize
+            success, _ = interactive_sign_in("tenant-id")
+            self.assertTrue(success)
+            self.assertTrue(identity_state_available())
+            self.assertTrue(token_cache_path().is_file())
+            encrypted = account_state_path().read_bytes()
+            self.assertNotIn(b"engineer@example.test", encrypted)
+            self.assertNotIn(b"plaintext-access-token", encrypted)
+            self.assertNotIn(b"plaintext-access-token", token_cache_path().read_bytes())
+            application.return_value.acquire_token_interactive.assert_called_once()
+
+    @patch("azure_health_beacon.identity.app_data_dir")
     def test_authentication_purge_only_deletes_isolated_profile(self, data_dir) -> None:
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory)
             data_dir.return_value = base
-            isolated = base / "azure-cli"
+            isolated = base / "identity"
             isolated.mkdir()
-            (isolated / "msal_token_cache.bin").write_bytes(b"encrypted-placeholder")
+            (isolated / "token-cache.bin").write_bytes(b"encrypted-placeholder")
+            legacy = base / "azure-cli"
+            legacy.mkdir()
             sibling = base / "checks.json"
             sibling.write_text("rules remain", encoding="utf-8")
             delete_isolated_azure_state()
             self.assertFalse(isolated.exists())
+            self.assertFalse(legacy.exists())
             self.assertTrue(sibling.exists())
 
-    @patch("azure_health_beacon.azure._run_az")
+    @patch("azure_health_beacon.azure.interactive_sign_in")
     def test_interactive_login_never_passes_a_password_or_requests_a_token(
-        self, run_az
+        self, sign_in
     ) -> None:
-        run_az.return_value = subprocess.CompletedProcess([], 0, "", "")
+        sign_in.return_value = (True, "Microsoft sign-in completed.")
         success, _ = interactive_login("22222222-2222-2222-2222-222222222222")
         self.assertTrue(success)
-        arguments = run_az.call_args.args[0]
-        joined = " ".join(arguments).casefold()
-        self.assertIn("login", arguments)
-        self.assertNotIn("password", joined)
-        self.assertNotIn("get-access-token", joined)
+        self.assertEqual(
+            sign_in.call_args.args,
+            ("22222222-2222-2222-2222-222222222222", 300),
+        )
 
     @patch("azure_health_beacon.azure._run_az")
     def test_subscription_listing_returns_metadata_only(self, run_az) -> None:
@@ -454,6 +505,121 @@ class AzureAuthenticationTests(unittest.TestCase):
         arguments = run_az.call_args.args[0]
         self.assertEqual(arguments[:2], ["group", "list"])
         self.assertIn(subscription.id, arguments)
+
+
+class AzureRestTests(unittest.TestCase):
+    @staticmethod
+    def response(payload: object) -> Mock:
+        response = Mock()
+        response.ok = True
+        response.status_code = 200
+        response.content = b"json"
+        response.json.return_value = payload
+        return response
+
+    @patch("azure_health_beacon.azure_rest.get_access_token")
+    def test_authorization_cannot_leave_the_expected_microsoft_endpoint(
+        self, token: Mock
+    ) -> None:
+        with self.assertRaisesRegex(OSError, "unexpected endpoint"):
+            azure_rest_module._request_json(
+                "GET", "https://attacker.example/collect", "tenant-id", 30
+            )
+        token.assert_not_called()
+
+    @patch("azure_health_beacon.azure_rest.get_access_token", return_value="memory-token")
+    @patch("azure_health_beacon.azure_rest.home_tenant_id", return_value="home-tenant")
+    @patch("azure_health_beacon.azure_rest.requests.request")
+    def test_subscription_discovery_uses_direct_https_across_tenants(
+        self, request: Mock, _home: Mock, token: Mock
+    ) -> None:
+        responses = iter([
+            self.response(
+                {"value": [{"tenantId": "home-tenant"}, {"tenantId": "guest-tenant"}]}
+            ),
+            self.response(
+                {
+                    "value": [
+                        {
+                            "subscriptionId": "sub-home",
+                            "displayName": "Home",
+                            "state": "Enabled",
+                        }
+                    ]
+                }
+            ),
+            self.response(
+                {
+                    "value": [
+                        {
+                            "subscriptionId": "sub-guest",
+                            "displayName": "Guest",
+                            "state": "Enabled",
+                        }
+                    ]
+                }
+            ),
+        ])
+        seen_headers: list[dict[str, str]] = []
+
+        def send(_method: str, _url: str, **kwargs: object) -> Mock:
+            seen_headers.append(dict(kwargs["headers"]))  # type: ignore[arg-type]
+            return next(responses)
+
+        request.side_effect = send
+        completed = azure_rest_module.execute_azure_operation(
+            ["account", "list", "--output", "json"], 30
+        )
+        self.assertEqual(completed.returncode, 0)
+        subscriptions = json.loads(completed.stdout)
+        self.assertEqual({item["id"] for item in subscriptions}, {"sub-home", "sub-guest"})
+        self.assertEqual(token.call_count, 3)
+        for call, headers in zip(request.call_args_list, seen_headers, strict=True):
+            self.assertTrue(call.args[1].startswith("https://"))
+            self.assertEqual(headers["Authorization"], "Bearer memory-token")
+
+    @patch(
+        "azure_health_beacon.azure_rest._tenant_for_subscription",
+        return_value="tenant-id",
+    )
+    @patch("azure_health_beacon.azure_rest.get_access_token", return_value="memory-token")
+    @patch("azure_health_beacon.azure_rest.requests.request")
+    def test_resource_property_uses_provider_api_and_direct_arm_request(
+        self, request: Mock, _token: Mock, _tenant: Mock
+    ) -> None:
+        request.side_effect = [
+            self.response(
+                {
+                    "resourceTypes": [
+                        {
+                            "resourceType": "azureFirewalls",
+                            "apiVersions": ["2025-01-01-preview", "2024-10-01"],
+                        }
+                    ]
+                }
+            ),
+            self.response({"properties": {"provisioningState": "Succeeded"}}),
+        ]
+        completed = azure_rest_module.execute_azure_operation(
+            [
+                "resource",
+                "show",
+                "--ids",
+                RESOURCE_ID,
+                "--subscription",
+                "11111111-1111-1111-1111-111111111111",
+                "--query",
+                "properties.provisioningState",
+                "--output",
+                "tsv",
+            ],
+            30,
+        )
+        self.assertEqual(completed.returncode, 0)
+        self.assertEqual(completed.stdout, "Succeeded")
+        self.assertEqual(
+            request.call_args_list[1].kwargs["params"]["api-version"], "2024-10-01"
+        )
 
 
 class ResourceGraphTests(unittest.TestCase):

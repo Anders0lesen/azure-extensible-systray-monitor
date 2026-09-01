@@ -39,6 +39,7 @@ from .config import (
     mark_connection_established,
     save_config,
 )
+from .identity import identity_state_available, verify_encrypted_storage
 from .model import CheckDefinition, CheckResult, CheckState
 from .signal_sources import SIGNAL_SOURCES
 from .updater import download_verified_installer, fetch_latest_release, is_newer_version
@@ -112,7 +113,12 @@ def _settings_snapshot(config: AppConfig) -> dict[str, object]:
 
 
 def _purge_expired_connection(config: AppConfig) -> AppConfig:
-    if not config.connection_purge_pending and not connection_is_expired(config):
+    missing_new_identity = config.onboarding_completed and not identity_state_available()
+    if (
+        not config.connection_purge_pending
+        and not connection_is_expired(config)
+        and not missing_new_identity
+    ):
         return config
     config.connection_purge_pending = True
     clear_connection_metadata(config)
@@ -157,7 +163,10 @@ class Bridge:
 
     @staticmethod
     def ping(_payload: dict[str, Any]) -> dict[str, str]:
-        return {"version": __version__}
+        return {
+            "version": __version__,
+            "encrypted_storage": verify_encrypted_storage(),
+        }
 
     @staticmethod
     def snapshot(_payload: dict[str, Any]) -> dict[str, object]:
