@@ -77,7 +77,7 @@ jobs:
           $Asset = "dist\AzureHealthBeacon-Setup-$env:GITHUB_REF_NAME.exe"
           $Hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $Asset).Hash.ToLowerInvariant()
           "$Hash *$([IO.Path]::GetFileName($Asset))" | Set-Content -Encoding ascii "$Asset.sha256"
-      - name: Verify 0.7.0 in-place upgrade and contaminated restart
+      - name: Verify 0.7.1 in-place upgrade and contaminated restart
         shell: pwsh
         run: |
           $Version = $env:GITHUB_REF_NAME.TrimStart('v')
@@ -91,15 +91,15 @@ jobs:
           # Install the currently public WPF-shell release first. The
           # new installer must replace it in place without a second wizard or
           # data migration step.
-          $PreviousDir = Join-Path $env:RUNNER_TEMP 'beacon-v070'
+          $PreviousDir = Join-Path $env:RUNNER_TEMP 'beacon-v071'
           New-Item -ItemType Directory -Path $PreviousDir -Force | Out-Null
-          $PreviousInstaller = Join-Path $PreviousDir 'AzureHealthBeacon-Setup-v0.7.0.exe'
+          $PreviousInstaller = Join-Path $PreviousDir 'AzureHealthBeacon-Setup-v0.7.1.exe'
           $PreviousChecksum = "$PreviousInstaller.sha256"
-          Invoke-WebRequest -Uri 'https://github.com/Anders0lesen/azure-extensible-systray-monitor/releases/download/v0.7.0/AzureHealthBeacon-Setup-v0.7.0.exe' -OutFile $PreviousInstaller
-          Invoke-WebRequest -Uri 'https://github.com/Anders0lesen/azure-extensible-systray-monitor/releases/download/v0.7.0/AzureHealthBeacon-Setup-v0.7.0.exe.sha256' -OutFile $PreviousChecksum
+          Invoke-WebRequest -Uri 'https://github.com/Anders0lesen/azure-extensible-systray-monitor/releases/download/v0.7.1/AzureHealthBeacon-Setup-v0.7.1.exe' -OutFile $PreviousInstaller
+          Invoke-WebRequest -Uri 'https://github.com/Anders0lesen/azure-extensible-systray-monitor/releases/download/v0.7.1/AzureHealthBeacon-Setup-v0.7.1.exe.sha256' -OutFile $PreviousChecksum
           $ExpectedPrevious = ((Get-Content -LiteralPath $PreviousChecksum -Raw) -split '\s+')[0].ToLowerInvariant()
           $ActualPrevious = (Get-FileHash -LiteralPath $PreviousInstaller -Algorithm SHA256).Hash.ToLowerInvariant()
-          if ($ActualPrevious -ne $ExpectedPrevious) { throw 'The downloaded 0.7.0 installer checksum did not match.' }
+          if ($ActualPrevious -ne $ExpectedPrevious) { throw 'The downloaded 0.7.1 installer checksum did not match.' }
           # Process.WaitForExit follows only Setup itself. Start-Process -Wait
           # follows Setup's launched Beacon too, which makes a successful old
           # installation look like a hung test.
@@ -115,12 +115,12 @@ jobs:
           $OldSetup = [Diagnostics.Process]::Start($OldStartInfo)
           if (-not $OldSetup.WaitForExit(120000)) {
             $OldSetup.Kill($true)
-            throw 'The 0.7.0 setup did not exit within two minutes.'
+            throw 'The 0.7.1 setup did not exit within two minutes.'
           }
-          if ($OldSetup.ExitCode -ne 0) { throw "The 0.7.0 setup failed: $($OldSetup.ExitCode)" }
+          if ($OldSetup.ExitCode -ne 0) { throw "The 0.7.1 setup failed: $($OldSetup.ExitCode)" }
           Start-Sleep -Seconds 5
           $OldVersion = (Get-Item -LiteralPath $InstallExe).VersionInfo.ProductVersion.Trim()
-          if ($OldVersion -ne '0.7.0') { throw "Expected 0.7.0 before upgrade, found $OldVersion." }
+          if ($OldVersion -ne '0.7.1') { throw "Expected 0.7.1 before upgrade, found $OldVersion." }
 
           # The in-app updater starts Setup and then exits. Reproduce that
           # handoff exactly before asking the new installer to replace files.
@@ -135,7 +135,7 @@ jobs:
             if (-not $OldRunning) { break }
             Start-Sleep -Milliseconds 250
           } while ([DateTime]::UtcNow -lt $StopDeadline)
-          if ($OldRunning) { throw 'The 0.7.0 Beacon did not exit for the updater handoff.' }
+          if ($OldRunning) { throw 'The 0.7.1 Beacon did not exit for the updater handoff.' }
 
           # Reproduce the environment inherited when an older onefile build
           # starts Setup, exits, and deletes its temporary Python runtime.
