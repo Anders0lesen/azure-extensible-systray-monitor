@@ -992,8 +992,8 @@ class SetupWizard:
         ttk.Label(
             security,
             text=(
-                "Your username, password, and MFA response stay inside Microsoft's sign-in flow. OAuth tokens are "
-                "persisted only as Windows DPAPI ciphertext, separate from rules and configuration. The complete "
+                "Your passkey, security key, Authenticator, Windows Hello, password, and MFA response stay inside "
+                "Microsoft's sign-in flow. OAuth tokens are persisted only as Windows DPAPI ciphertext, separate from rules and configuration. The complete "
                 "app-owned identity cache is deleted after 14 days."
             ),
             wraplength=510,

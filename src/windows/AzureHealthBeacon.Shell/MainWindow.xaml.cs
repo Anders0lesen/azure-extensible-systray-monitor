@@ -113,7 +113,7 @@ public partial class MainWindow : Window
         PageSubtitle.Text = "Connect securely before creating any checks";
         SetConnectionGatedNavigation(false);
         var page = PageStack();
-        page.Children.Add(Heading("Let’s connect Azure", "The Beacon uses Microsoft’s interactive sign-in. Your password and MFA response are never seen or stored by this app."));
+        page.Children.Add(Heading("Let’s connect Azure", "Microsoft’s browser handles passkeys, security keys, Authenticator, Windows Hello, passwords, and Conditional Access. The Beacon only receives the resulting OAuth authorization."));
         var panel = Card();
         var content = Vertical(panel);
         content.Children.Add(IconTitle("key", "1. Sign in with Microsoft"));
@@ -169,7 +169,7 @@ public partial class MainWindow : Window
         content.Children.Add(subscriptions);
         content.Children.Add(verify);
         page.Children.Add(panel);
-        page.Children.Add(Muted("Security boundary: no username, password, MFA response, client secret, access token, or refresh token is written to the Beacon configuration or rule files."));
+        page.Children.Add(Muted("Security boundary: the Beacon does not inspect which Microsoft authentication method you use. No password, passkey, MFA response, client secret, access token, or refresh token is written to configuration or rule files."));
         ContentHost.Content = page;
     }
 
@@ -560,14 +560,20 @@ public partial class MainWindow : Window
     {
         PageTitle.Text = "About"; PageSubtitle.Text = "Product, privacy, and open-source acknowledgements";
         var page = PageStack(); var card = Card(); var body = Vertical(card);
-        body.Children.Add(Heading("Azure Health Beacon", $"Version {Text(_snapshot["version"], "0.7.1")} · Windows 11"));
+        body.Children.Add(Heading("Azure Health Beacon", $"Version {Text(_snapshot["version"], "0.7.2")} · Windows 11"));
         body.Children.Add(Muted("An extensible, local-first Azure signal monitor. Confirmed Azure findings are red; authentication, network, timeout, access, and indeterminate results remain grey."));
         var actions = new WrapPanel { Margin = new Thickness(0, 16, 0, 0) };
         var github = Primary("Open GitHub repository"); github.Click += (_, _) => Process.Start(new ProcessStartInfo("https://github.com/Anders0lesen/azure-extensible-systray-monitor") { UseShellExecute = true }); actions.Children.Add(github);
         var checkUpdate = Secondary("Check for updates"); checkUpdate.Margin = new Thickness(8, 0, 0, 0); actions.Children.Add(checkUpdate);
+        var openLog = Secondary("Open diagnostic log"); openLog.Margin = new Thickness(8, 0, 0, 0); openLog.Click += (_, _) =>
+        {
+            var path = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "AzureHealthBeacon", "beacon.log");
+            if (File.Exists(path)) Process.Start(new ProcessStartInfo(path) { UseShellExecute = true });
+            else System.Windows.MessageBox.Show("No diagnostic log has been created yet.", "Azure Health Beacon", MessageBoxButton.OK, MessageBoxImage.Information);
+        }; actions.Children.Add(openLog);
         var updateStatus = new TextBlock { Foreground = Brush("SuccessBrush"), Margin = new Thickness(0, 10, 0, 0), TextWrapping = TextWrapping.Wrap };
         checkUpdate.Click += async (_, _) => await CheckForUpdatesInteractiveAsync(updateStatus);
-        body.Children.Add(actions); body.Children.Add(updateStatus);
+        body.Children.Add(actions); body.Children.Add(updateStatus); body.Children.Add(Muted("The rotating diagnostic log contains authentication stages and error categories, never tokens, passkeys, passwords, or Azure response bodies."));
         body.Children.Add(SectionTitle("Bundled icons")); body.Children.Add(Muted("Tabler Icons v3.46.0 · MIT License · baked into the application for offline use."));
         page.Children.Add(card); ContentHost.Content = page;
     }

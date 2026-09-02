@@ -103,6 +103,7 @@ try {
         Require-Element (Find-Element $root 'Check for updates' ([Windows.Automation.ControlType]::Button)) 'first-use Settings update button'
         Invoke-Element (Find-Element $root 'About' ([Windows.Automation.ControlType]::Button))
         Require-Element (Find-Element $root 'Check for updates' ([Windows.Automation.ControlType]::Button)) 'first-use About update button'
+        Require-Element (Find-Element $root 'Open diagnostic log' ([Windows.Automation.ControlType]::Button)) 'first-use sanitized diagnostic-log button'
         Invoke-Element (Find-Element $root 'Overview' ([Windows.Automation.ControlType]::Button))
         Require-Element (Find-Element $root 'Sign in with Microsoft' ([Windows.Automation.ControlType]::Button)) 'return from recovery navigation to setup'
     }
