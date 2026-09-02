@@ -10,9 +10,11 @@ When upgrading from v0.7.0, existing rules and settings are retained, but the le
 
 ## 2. Sign in with Microsoft
 
-Select **Sign in with Microsoft**. The Beacon starts Microsoft's browser-based OAuth authorization-code flow with PKCE. Microsoft handles the account, password, Windows Hello, Conditional Access, and MFA.
+Select **Sign in with Microsoft**. The Beacon starts Microsoft's browser-based OAuth authorization-code flow with PKCE. Microsoft's browser handles the account and whichever method Entra requires: passkey, security key, Authenticator, Windows Hello, password, Conditional Access, or another tenant-approved method.
 
-The Beacon does not execute Azure CLI and does not offer username, password, client-secret, or token fields. An optional tenant ID can narrow the initial sign-in for multi-tenant accounts.
+The Beacon does not inspect the authentication method, execute Azure CLI, or offer username, password, passkey, client-secret, or token fields. An optional tenant ID can narrow the initial sign-in for multi-tenant accounts.
+
+After the OAuth callback, the Beacon selects the signed-in account through MSAL's encrypted token cache. It does not assume the interactive result contains a separate account record.
 
 After success, MSAL persists the reusable authorization only as Windows DPAPI CurrentUser ciphertext in the app-owned `identity` directory. If encrypted persistence is unavailable, setup fails rather than writing plaintext.
 

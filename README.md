@@ -2,7 +2,7 @@
 
 <img src="assets/AzureHealthBeacon-Brand.png" alt="Azure Health Beacon" width="640">
 
-Current version: **0.7.1 public preview** — see the [changelog](CHANGELOG.md).
+Current version: **0.7.2 public preview** — see the [changelog](CHANGELOG.md).
 
 > **Prototype:** Windows 11 only. **Azure Health Beacon** lets you discover Azure signal surfaces and turn the properties, Resource Graph records, logs, Application Insights telemetry, and metrics you care about into tray warnings.
 
@@ -35,7 +35,7 @@ See [Lifecycle](docs/lifecycle.md) and [First-run setup](docs/first-run.md).
 
 ## Credential security
 
-Azure Health Beacon has no username, password, MFA, client-secret, certificate, or connection-string field. Microsoft's browser handles interactive authentication. The reusable OAuth session is stored only as Windows DPAPI CurrentUser ciphertext under `%LOCALAPPDATA%\AzureHealthBeacon\identity`; plaintext fallback is forbidden.
+Azure Health Beacon has no username, password, passkey, MFA, client-secret, certificate, or connection-string field. Microsoft's browser handles passkeys, security keys, Authenticator, Windows Hello, passwords, Conditional Access, and other tenant-approved methods. The Beacon consumes only the resulting OAuth authorization. The reusable session is stored only as Windows DPAPI CurrentUser ciphertext under `%LOCALAPPDATA%\AzureHealthBeacon\identity`; plaintext fallback is forbidden.
 
 The app does not execute Azure CLI, require it to be installed, or read the user's normal `%USERPROFILE%\.azure` profile. Monitoring uses direct HTTPS calls to Azure Resource Manager, Resource Graph, Log Analytics/Application Insights, and Azure Monitor.
 
@@ -45,7 +45,7 @@ Read [Credential security](docs/credential-security.md) and [Security policy](SE
 
 ## Install
 
-Download the installer from the [latest GitHub release](https://github.com/Anders0lesen/azure-extensible-systray-monitor/releases/latest) and run `AzureHealthBeacon-Setup-v0.7.1.exe`. It installs for the current Windows user, adds a Start Menu entry, and does not request administrator access.
+Download the installer from the [latest GitHub release](https://github.com/Anders0lesen/azure-extensible-systray-monitor/releases/latest) and run `AzureHealthBeacon-Setup-v0.7.2.exe`. It installs for the current Windows user, adds a Start Menu entry, and does not request administrator access.
 
 The public-preview installer is not Authenticode code-signed yet, so Windows may show **Unknown publisher**. The release includes a SHA-256 checksum and GitHub build-provenance attestation. Do not install a copy obtained from anywhere except this repository.
 
@@ -53,14 +53,14 @@ The public-preview installer is not Authenticode code-signed yet, so Windows may
 
 1. Start `AzureHealthBeacon.exe`.
 2. Select **Sign in with Microsoft** in the automatically opened setup wizard.
-3. Complete Microsoft's account, Conditional Access, and MFA prompts.
+3. Complete whichever passkey, security-key, Authenticator, Windows Hello, password, Conditional Access, or MFA prompts Microsoft presents.
 4. Select the intended subscription.
 5. Select **Test credentials and finish setup**.
 6. Continue to checks only after validation succeeds.
 7. Select **Add a check**, then explicitly choose one of the six signal-source cards; nothing is preselected.
 8. Use the source-specific Azure discovery picker, define what counts as a finding, select **Test without saving**, then **Save and enable**.
 
-Until setup succeeds, the tray remains grey and monitoring/check-management commands are disabled.
+Until setup succeeds, the tray remains grey and monitoring/check-management commands are disabled. Overview, Settings, About, update recovery, and the sanitized diagnostic log remain available.
 
 ## Tray states
 
@@ -78,7 +78,7 @@ The application artwork is used for Windows branding only. The tray deliberately
 
 ## Signal sources and rules
 
-Version `0.7.1` supports six strict, data-only signal sources:
+Version `0.7.2` supports six strict, data-only signal sources:
 
 - **Provisioning state:** confirm that one resource's `properties.provisioningState` matches the configured healthy states.
 - **VM power state:** read one virtual machine's live instance view and choose which `PowerState/...` values are healthy.

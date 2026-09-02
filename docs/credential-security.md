@@ -4,7 +4,7 @@
 
 Azure Health Beacon is self-contained. It does not execute Azure CLI, read `%USERPROFILE%\.azure`, inherit a developer login, or require Azure CLI to be installed.
 
-Microsoft's browser handles the account, password, Windows Hello, Conditional Access, and MFA. The Beacon receives the resulting OAuth authorization in process memory and persists the reusable session only through Microsoft's MSAL Extensions encrypted persistence.
+Microsoft's browser handles the account and authentication method, including passkeys, FIDO2 security keys, Authenticator, Windows Hello, passwords, Conditional Access, and MFA. The Beacon receives only the resulting OAuth authorization in process memory and persists the reusable session through Microsoft's MSAL Extensions encrypted persistence.
 
 ## Identity type
 
@@ -23,7 +23,9 @@ User
                   -> normalized status returned to the private engine
 ```
 
-No token is returned through the WPF bridge or placed in a rule, configuration file, export, update request, or log.
+After browser completion, the Beacon uses MSAL's documented `get_accounts()` cache surface to select the authenticated account. It makes no assumption about which authentication method produced the authorization. No token is returned through the WPF bridge or placed in a rule, configuration file, export, update request, or log.
+
+The rotating diagnostic log records only stages, success/failure categories, account counts, and exception type names. It excludes account names, tenant IDs, claims, correlation values, tokens, authentication material, and Azure response bodies.
 
 ## App-owned encrypted storage
 
@@ -87,6 +89,8 @@ v0.7.0 used a Beacon-isolated Azure CLI profile. v0.7.1 does not import or reuse
 
 ## References
 
+- [Microsoft Entra passkeys-by-default rollout](https://learn.microsoft.com/entra/identity/authentication/concept-sms-voice-retirement)
+- [MSAL Python account and token acquisition](https://learn.microsoft.com/entra/msal/python/getting-started/acquiring-tokens)
 - [MSAL Python token-cache serialization](https://learn.microsoft.com/entra/msal/python/advanced/msal-python-token-cache-serialization)
 - [Microsoft Authentication Extensions encrypted persistence](https://github.com/AzureAD/microsoft-authentication-extensions-for-python)
 - [Azure Identity token caching](https://learn.microsoft.com/azure/developer/python/sdk/authentication/additional-configurations#persist-the-token-cache)

@@ -64,7 +64,7 @@ WPF/.NET shell
 - Local communication uses inherited anonymous process pipes. The engine opens no listening socket and accepts only fixed named data operations.
 - Tokens, passwords, encrypted identity-cache files, and raw credential objects never cross the UI boundary.
 - Existing schema-6 configuration and schema-4 rule packs remain compatible.
-- The legacy Tk entry point remains in source as a short-term rollback aid, but v0.7.1 ships the WPF shell and private engine.
+- The legacy Tk entry point remains in source as a short-term rollback aid, but v0.7.2 ships the WPF shell and private engine.
 
 ## Tabler icon policy
 

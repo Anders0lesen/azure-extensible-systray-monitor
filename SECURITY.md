@@ -12,7 +12,7 @@ Do not open a public issue containing credentials, tokens, tenant details, subsc
 
 ## Non-negotiable rules
 
-- Never add a username/password or MFA field.
+- Never add a username, password, passkey, security-key, Authenticator, or MFA field.
 - Never print, log, export, or return access or refresh tokens.
 - Never permit plaintext credential-cache fallback.
 - Never support client secrets, storage keys, SAS tokens, PATs, connection strings, or private keys in rules.
@@ -24,7 +24,7 @@ Do not open a public issue containing credentials, tokens, tenant details, subsc
 
 ## Authentication boundary
 
-Interactive authentication uses MSAL's authorization-code flow with PKCE and Microsoft's browser UI. The app is a public client and contains no client secret. Passwords, Windows Hello, Conditional Access, and MFA stay on Microsoft's surface.
+Interactive authentication uses MSAL's authorization-code flow with PKCE and Microsoft's browser UI. The app is a public client and contains no client secret. Passkeys, FIDO2 security keys, Authenticator, Windows Hello, passwords, Conditional Access, and MFA stay on Microsoft's surface. After completion, the app selects the account through MSAL's encrypted cache instead of depending on authentication-method-specific result fields.
 
 MSAL's reusable token cache and the account selector metadata are stored only under `%LOCALAPPDATA%\AzureHealthBeacon\identity`. Both are encrypted with Windows DPAPI CurrentUser through Microsoft Authentication Extensions. Construction fails if encrypted persistence is unavailable; unencrypted fallback is forbidden.
 
@@ -47,7 +47,7 @@ Deletion is fail-closed: a purge-pending flag is stored before removal. Rules re
 - `checks.json`: non-secret scope metadata, connection timestamp, rules, scheduling, theme, and update choices.
 - `identity/token-cache.bin`: DPAPI-encrypted MSAL token cache.
 - `identity/account-state.bin`: DPAPI-encrypted account selector metadata.
-- `beacon.log`: rotating operational messages without successful Azure response bodies or tokens.
+- `beacon.log`: rotating stage/category diagnostics without identity values, authentication material, successful Azure response bodies, or tokens.
 - `updates`: verified installer downloads.
 
 DPAPI protects at rest against other accounts and offline copying. It cannot protect against malicious code already executing as the same Windows user.

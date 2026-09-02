@@ -2,10 +2,16 @@
 
 This project uses [Semantic Versioning](https://semver.org/). Changes are grouped by release so each GitHub tag has a short, human-readable scope.
 
-## [Unreleased]
+## [0.7.2] - 2026-09-02
+
+### Changed
+
+- Microsoft browser sign-in is authentication-method neutral: passkeys, security keys, Authenticator, Windows Hello, passwords, and Conditional Access all converge on the same OAuth handoff.
+- About exposes a sanitized rotating diagnostic log containing authentication stages and error categories only.
 
 ### Fixed
 
+- Interactive sign-in now selects the authenticated account from MSAL's encrypted cache, as documented by Microsoft, instead of expecting an optional `account` object in the token result.
 - Overview, Settings, and About remain available when Azure sign-in has not succeeded, so credential trouble cannot block update recovery.
 - About now includes its own **Check for updates** action, and Overview returns an unconnected user to setup.
 
@@ -138,5 +144,5 @@ First public preview.
 [0.5.0]: https://github.com/Anders0lesen/azure-extensible-systray-monitor/releases/tag/v0.5.0
 [0.6.0]: https://github.com/Anders0lesen/azure-extensible-systray-monitor/releases/tag/v0.6.0
 [0.7.1]: https://github.com/Anders0lesen/azure-extensible-systray-monitor/releases/tag/v0.7.1
-[Unreleased]: https://github.com/Anders0lesen/azure-extensible-systray-monitor/compare/v0.7.1...HEAD
+[0.7.2]: https://github.com/Anders0lesen/azure-extensible-systray-monitor/releases/tag/v0.7.2
 [0.7.0]: https://github.com/Anders0lesen/azure-extensible-systray-monitor/releases/tag/v0.7.0
