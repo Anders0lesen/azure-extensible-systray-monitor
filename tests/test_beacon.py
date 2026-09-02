@@ -13,6 +13,7 @@ from unittest.mock import Mock, patch
 
 import azure_health_beacon.azure as azure_module
 import azure_health_beacon.azure_rest as azure_rest_module
+import azure_health_beacon.identity as identity_module
 from azure_health_beacon.azure import (
     AzureSubscription,
     delete_isolated_azure_state,
@@ -422,15 +423,26 @@ class AzureAuthenticationTests(unittest.TestCase):
                 )
                 return {
                     "access_token": "plaintext-access-token-must-not-survive",
-                    "account": {
-                        "home_account_id": "home-account",
-                        "username": "engineer@example.test",
+                    # MSAL promises a token result, not an `account` member.
+                    # Passkey, password, broker, and other browser methods all
+                    # converge here; account selection comes from the cache.
+                    "id_token_claims": {
+                        "tid": "tenant-id",
+                        "preferred_username": "engineer@example.test",
                     },
-                    "id_token_claims": {"tid": "tenant-id"},
                 }
 
+            application.return_value.get_accounts.return_value = [
+                {
+                    "home_account_id": "home-account",
+                    "username": "engineer@example.test",
+                    "realm": "tenant-id",
+                    "local_account_id": "local-account",
+                }
+            ]
             application.return_value.acquire_token_interactive.side_effect = authorize
-            success, _ = interactive_sign_in("tenant-id")
+            with self.assertLogs("azure_health_beacon.identity", level="INFO") as logs:
+                success, _ = interactive_sign_in("tenant-id")
             self.assertTrue(success)
             self.assertTrue(identity_state_available())
             self.assertTrue(token_cache_path().is_file())
@@ -438,6 +450,16 @@ class AzureAuthenticationTests(unittest.TestCase):
             self.assertNotIn(b"engineer@example.test", encrypted)
             self.assertNotIn(b"plaintext-access-token", encrypted)
             self.assertNotIn(b"plaintext-access-token", token_cache_path().read_bytes())
+            stored_state = json.loads(
+                _encrypted_persistence(account_state_path()).load()
+            )
+            self.assertEqual(stored_state["home_account_id"], "home-account")
+            self.assertEqual(stored_state["home_tenant_id"], "tenant-id")
+            log_text = " ".join(logs.output)
+            self.assertIn("cached_account_count=1", log_text)
+            self.assertIn("status=succeeded", log_text)
+            self.assertNotIn("engineer@example.test", log_text)
+            self.assertNotIn("plaintext-access-token", log_text)
             application.return_value.acquire_token_interactive.assert_called_once()
 
     @patch("azure_health_beacon.identity.app_data_dir")
@@ -456,6 +478,38 @@ class AzureAuthenticationTests(unittest.TestCase):
             self.assertFalse(isolated.exists())
             self.assertFalse(legacy.exists())
             self.assertTrue(sibling.exists())
+
+    def test_account_selection_fails_closed_when_multiple_accounts_are_ambiguous(
+        self,
+    ) -> None:
+        application = Mock()
+        application.get_accounts.return_value = [
+            {"home_account_id": "first", "username": "first@example.test"},
+            {"home_account_id": "second", "username": "second@example.test"},
+        ]
+        state, count = identity_module._account_state_from_result(
+            application, {"access_token": "memory-only"}
+        )
+        self.assertEqual(count, 2)
+        self.assertIsNone(state)
+
+    @patch("azure_health_beacon.identity.msal.PublicClientApplication")
+    @patch("azure_health_beacon.identity.app_data_dir")
+    def test_authentication_error_log_sanitizes_provider_text(
+        self, data_dir: Mock, application: Mock
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            data_dir.return_value = Path(directory)
+            application.return_value.acquire_token_interactive.return_value = {
+                "error": "interaction_required\nengineer@example.test",
+                "error_description": "Sign-in was not completed.",
+            }
+            with self.assertLogs("azure_health_beacon.identity", level="WARNING") as logs:
+                success, _message = interactive_sign_in("tenant-id")
+            self.assertFalse(success)
+            log_text = " ".join(logs.output)
+            self.assertIn("error_code=provider-error", log_text)
+            self.assertNotIn("engineer", log_text)
 
     @patch("azure_health_beacon.azure.interactive_sign_in")
     def test_interactive_login_never_passes_a_password_or_requests_a_token(
