@@ -158,7 +158,7 @@ pub fn save_config_to(path: &Path, config: &AppConfig) -> Result<(), String> {
         .ok_or("Configuration path has no parent directory")?;
     fs::create_dir_all(parent).map_err(|_| "Configuration directory could not be created")?;
     let temporary = parent.join(format!("checks-{}.tmp", Uuid::new_v4()));
-    let result = (|| {
+    let result: Result<(), String> = (|| {
         let mut file = fs::File::create(&temporary)
             .map_err(|_| "Temporary configuration could not be created")?;
         file.write_all(&bytes)
@@ -221,7 +221,7 @@ pub fn export_rule_pack(path: &Path, checks: &[CheckDefinition]) -> Result<(), S
         .ok_or("Rule pack path has no parent directory")?;
     fs::create_dir_all(parent).map_err(|_| "Rule pack directory could not be created")?;
     let temporary = parent.join(format!("rules-{}.tmp", Uuid::new_v4()));
-    let result = (|| {
+    let result: Result<(), String> = (|| {
         let mut file =
             fs::File::create(&temporary).map_err(|_| "Temporary rule pack could not be created")?;
         file.write_all(&bytes)

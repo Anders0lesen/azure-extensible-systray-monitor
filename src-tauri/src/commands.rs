@@ -9,6 +9,7 @@ use crate::{
     config::{AppConfig, export_rule_pack, import_rule_pack, save_config, validate_rule},
     model::{BeaconState, CheckDefinition, CheckResult, aggregate_state},
     state::AppState,
+    updater::{self, ReleaseInfo},
 };
 
 #[derive(Clone, Debug, Serialize)]
@@ -161,6 +162,72 @@ pub fn set_theme(theme_mode: String, state: State<'_, AppState>) -> Result<AppSn
         save_config(&config)?;
     }
     snapshot_inner(&state)
+}
+
+#[tauri::command]
+pub async fn check_for_updates(state: State<'_, AppState>) -> Result<ReleaseInfo, String> {
+    check_for_updates_inner(state.inner()).await
+}
+
+pub async fn check_for_updates_inner(state: &AppState) -> Result<ReleaseInfo, String> {
+    let timeout = state
+        .config
+        .lock()
+        .map_err(|_| "The settings lock is unavailable")?
+        .timeout_seconds;
+    let release = tauri::async_runtime::spawn_blocking(move || {
+        updater::check(env!("CARGO_PKG_VERSION"), timeout)
+    })
+    .await
+    .map_err(|_| "The update check stopped unexpectedly")??;
+    {
+        let mut config = state
+            .config
+            .lock()
+            .map_err(|_| "The settings lock is unavailable")?;
+        config.last_update_check_utc = Utc::now().to_rfc3339();
+        save_config(&config)?;
+    }
+    Ok(release)
+}
+
+#[tauri::command]
+pub async fn install_latest_update(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    install_latest_update_inner(app, state.inner()).await
+}
+
+pub async fn install_latest_update_inner(app: AppHandle, state: &AppState) -> Result<(), String> {
+    let release = check_for_updates_inner(state).await?;
+    if !release.update_available {
+        return Err("Azure Health Beacon is already fully up to date".into());
+    }
+    let timeout = state
+        .config
+        .lock()
+        .map_err(|_| "The settings lock is unavailable")?
+        .timeout_seconds;
+    let installer =
+        tauri::async_runtime::spawn_blocking(move || updater::download(&release, timeout))
+            .await
+            .map_err(|_| "The verified update download stopped unexpectedly")??;
+    updater::launch(&installer)?;
+    app.exit(0);
+    Ok(())
+}
+
+pub fn automatic_update_is_due(state: &AppState) -> bool {
+    let Ok(config) = state.config.lock() else {
+        return false;
+    };
+    if config.update_mode == "manual" {
+        return false;
+    }
+    chrono::DateTime::parse_from_rfc3339(&config.last_update_check_utc)
+        .map(|last| Utc::now() >= last + chrono::Duration::days(1))
+        .unwrap_or(true)
 }
 
 #[tauri::command]

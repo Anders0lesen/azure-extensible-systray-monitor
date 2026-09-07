@@ -7,7 +7,6 @@
     "core:default",
     "dialog:allow-open",
     "dialog:allow-save",
-    "opener:allow-open-url",
-    "updater:default"
+    "opener:allow-open-url"
   ]
 }

@@ -25,6 +25,7 @@ interface Config {
 interface Result { check_id: string; name: string; state: CheckState; summary: string; observed_value: string; checked_at: string; portal_url: string; }
 interface Snapshot { version: string; connected: boolean; connectionExpiresUtc: string; config: Config; results: Result[]; beaconState: string; }
 interface Subscription { id: string; name: string; tenantId: string; }
+interface ReleaseInfo { updateAvailable: boolean; version: string; tag: string; title: string; notes: string; pageUrl: string; }
 
 const sources = [
   ["azure_resource_provisioning", "Provisioning state", "Confirm that a resource finished provisioning successfully.", "icon-checks"],
@@ -42,6 +43,9 @@ let editing: Rule | null = null;
 let choosingSource = false;
 let subscriptions: Subscription[] = [];
 let busy = false;
+let updateBusy = false;
+let updateInfo: ReleaseInfo | null = null;
+let updateError = "";
 
 function e(value: unknown): string {
   return String(value ?? "").replace(/[&<>'"]/g, char => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" })[char]!);
@@ -210,18 +214,32 @@ function renderSettings(): void {
     <div class="panel"><h2>Windows</h2><div class="form-grid"><label class="toggle-row"><input id="start-windows" type="checkbox" ${c.start_with_windows ? "checked" : ""}><span><strong>Start with Windows</strong><br><small class="muted">Explicitly opt in.</small></span></label><label class="toggle-row"><input id="start-minimized" type="checkbox" ${c.start_minimized ? "checked" : ""}><span><strong>Start minimized in notification area</strong><br><small class="muted">Explicitly opt in.</small></span></label></div></div>
     <div class="panel"><h2>Monitoring</h2><div class="form-grid compact">${settingNumber("interval", "Check interval (minutes)", c.interval_minutes)}${settingNumber("timeout", "Attempt timeout (seconds)", c.timeout_seconds)}${settingNumber("retry", "Retry count", c.retry_count)}</div></div>
     <div class="panel"><h2>Azure connection</h2><p class="muted">${snapshot.connected ? `Connected to ${e(c.azure_subscription_name)}. Authorization expires ${e(new Date(snapshot.connectionExpiresUtc).toLocaleString())}.` : "No Azure authorization is stored."}</p><button class="button danger" id="delete-connection" ${snapshot.connected ? "" : "disabled"}>Delete Azure connection</button></div>
-    <div class="panel"><h2>Updates</h2><div class="form-grid"><label><input name="updates" type="radio" value="manual" ${c.update_mode === "manual" ? "checked" : ""}> Manual only</label><label><input name="updates" type="radio" value="notify" ${c.update_mode === "notify" ? "checked" : ""}> Notify me</label><label><input name="updates" type="radio" value="automatic" ${c.update_mode === "automatic" ? "checked" : ""}> Install verified updates automatically</label><small class="muted">Notification and automatic installation are explicitly opt-in. The Rust preview will only install Tauri-signed updater artifacts.</small><button class="button" id="check-updates">Check for updates</button><div id="update-status"></div></div></div>
+    <div class="panel"><h2>Updates</h2><div class="form-grid"><label><input name="updates" type="radio" value="manual" ${c.update_mode === "manual" ? "checked" : ""}> Manual only</label><label><input name="updates" type="radio" value="notify" ${c.update_mode === "notify" ? "checked" : ""}> Notify me</label><label><input name="updates" type="radio" value="automatic" ${c.update_mode === "automatic" ? "checked" : ""}> Install verified updates automatically</label><small class="muted">Notification and automatic installation are explicitly opt-in. An installer must match both GitHub’s asset digest and the published SHA-256 checksum.</small>${updateControls()}</div></div>
   </div><button class="button primary" style="width:100%; margin-top:18px" id="save-settings">Save settings</button>`);
   document.querySelector("#save-settings")?.addEventListener("click", saveSettings);
   document.querySelector("#delete-connection")?.addEventListener("click", deleteConnection);
-  document.querySelector("#check-updates")?.addEventListener("click", () => { document.querySelector("#update-status")!.innerHTML = `<div class="callout">v0.8 preview updater metadata is not published yet. Settings and recovery remain accessible here without Azure sign-in.</div>`; });
+  bindUpdateControls();
 }
 
 function settingNumber(id: string, label: string, value: number): string { return `<div class="field"><label for="${id}">${label}</label><input id="${id}" type="number" value="${value}"></div>`; }
 
 function renderAbout(): void {
-  app.innerHTML = layout("About", "Version, security boundary and recovery", `<div class="grid two"><div class="panel"><img src="/AzureHealthBeacon-Brand-Square.png" width="76" height="76" alt="Azure Health Beacon"><h2>Azure Health Beacon</h2><p>Rust/Tauri preview v${e(snapshot.version)}</p><p class="muted">Windows 11 local-first Azure signal monitor.</p><button class="button primary" id="github">Open GitHub repository</button></div><div class="panel"><h2>Credential security</h2><p class="muted">Microsoft handles passwords, passkeys and MFA in the system browser. The app stores only a renewable OAuth authorization as Windows DPAPI CurrentUser ciphertext and hard-deletes it after 14 days.</p><p class="muted">The web interface never receives OAuth tokens. Rules cannot contain credentials or execute code.</p></div></div>`);
+  app.innerHTML = layout("About", "Version, security boundary and recovery", `<div class="grid two"><div class="panel"><img src="/AzureHealthBeacon-Brand-Square.png" width="76" height="76" alt="Azure Health Beacon"><h2>Azure Health Beacon</h2><p>Rust/Tauri preview v${e(snapshot.version)}</p><p class="muted">Windows 11 local-first Azure signal monitor.</p><div class="actions"><button class="button primary" id="github">Open GitHub repository</button></div><div style="margin-top:16px">${updateControls()}</div></div><div class="panel"><h2>Credential security</h2><p class="muted">Microsoft handles passwords, passkeys and MFA in the system browser. The app stores only a renewable OAuth authorization as Windows DPAPI CurrentUser ciphertext and hard-deletes it after 14 days.</p><p class="muted">The web interface never receives OAuth tokens. Rules cannot contain credentials or execute code.</p></div></div>`);
   document.querySelector("#github")?.addEventListener("click", () => openUrl("https://github.com/Anders0lesen/azure-extensible-systray-monitor"));
+  bindUpdateControls();
+}
+
+function updateControls(): string {
+  let status = "";
+  if (updateError) status = `<div class="callout error">${e(updateError)}</div>`;
+  else if (updateInfo?.updateAvailable) status = `<div class="callout"><strong>Version ${e(updateInfo.version)} is available.</strong><br>${e(updateInfo.title)}</div><button class="button primary" id="install-update" ${updateBusy ? "disabled" : ""}>${updateBusy ? "Preparing verified update…" : "Update and restart"}</button>`;
+  else if (updateInfo) status = `<div class="callout success">✅ Full up-to-date — No new updates available</div>`;
+  return `<button class="button" id="check-updates" ${updateBusy ? "disabled" : ""}>${updateBusy ? "Checking…" : "Check for updates"}</button><div id="update-status">${status}</div>`;
+}
+
+function bindUpdateControls(): void {
+  document.querySelector("#check-updates")?.addEventListener("click", checkUpdates);
+  document.querySelector("#install-update")?.addEventListener("click", installUpdate);
 }
 
 function subscriptionPicker(): string { return `<div class="setup-step"><div class="step-number">2</div><div><h3>Choose the initial subscription</h3><p class="muted">This confirms the authorization works. Resource Graph rules can still query every accessible subscription.</p><select id="subscription">${subscriptions.map(item => `<option value="${e(item.id)}">${e(item.name)} — ${e(item.id)}</option>`).join("")}</select><button class="button primary" style="margin-top:10px" id="finish-setup">Test credentials and finish setup</button></div></div>`; }
@@ -236,6 +254,8 @@ async function exportRules(): Promise<void> { try { const selected = await saveD
 async function deleteRule(): Promise<void> { if (!editing || !confirm(`Delete ${editing.name}?`)) return; try { snapshot = await invoke<Snapshot>("delete_rule", { ruleId: editing.id }); editing = null; toast("Rule deleted."); render(); } catch (error) { toast(String(error), true); } }
 async function deleteConnection(): Promise<void> { if (!confirm("Delete the complete encrypted Azure connection? Rules will be retained.")) return; try { snapshot = await invoke<Snapshot>("delete_connection"); page = "overview"; toast("Azure connection deleted."); render(); } catch (error) { toast(String(error), true); } }
 async function saveSettings(): Promise<void> { try { const selected = document.querySelector<HTMLInputElement>('input[name="updates"]:checked')!; snapshot = await invoke<Snapshot>("save_settings", { patch: { intervalMinutes: Number((document.querySelector("#interval") as HTMLInputElement).value), timeoutSeconds: Number((document.querySelector("#timeout") as HTMLInputElement).value), retryCount: Number((document.querySelector("#retry") as HTMLInputElement).value), updateMode: selected.value, startWithWindows: (document.querySelector("#start-windows") as HTMLInputElement).checked, startMinimized: (document.querySelector("#start-minimized") as HTMLInputElement).checked, themeMode: snapshot.config.theme_mode } }); toast("Settings saved."); render(); } catch (error) { toast(String(error), true); } }
+async function checkUpdates(): Promise<void> { updateBusy = true; updateError = ""; render(); try { updateInfo = await invoke<ReleaseInfo>("check_for_updates"); } catch (error) { updateInfo = null; updateError = String(error); } finally { updateBusy = false; render(); } }
+async function installUpdate(): Promise<void> { if (!updateInfo?.updateAvailable) return; updateBusy = true; updateError = ""; render(); try { await invoke("install_latest_update"); } catch (error) { updateError = String(error); updateBusy = false; render(); } }
 
 function bindCommon(): void {
   document.querySelectorAll<HTMLElement>("[data-page]").forEach(item => item.addEventListener("click", () => { page = item.dataset.page as Page; editing = null; choosingSource = false; render(); }));
@@ -250,4 +270,6 @@ void load();
 if ("__TAURI_INTERNALS__" in window) {
   void listen("tray-check-now", () => void checkNow());
   void listen("snapshot-updated", () => void load());
+  void listen<ReleaseInfo>("update-available", event => { updateInfo = event.payload; toast(`Azure Health Beacon ${event.payload.version} is available.`); if (page === "settings" || page === "about") render(); });
+  void listen<string>("update-error", event => { updateError = event.payload; toast(event.payload, true); if (page === "settings" || page === "about") render(); });
 }

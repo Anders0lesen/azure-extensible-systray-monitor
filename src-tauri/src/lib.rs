@@ -6,6 +6,7 @@ mod model;
 mod security;
 mod state;
 mod tray;
+mod updater;
 
 use tauri::{Emitter, Manager};
 
@@ -21,7 +22,6 @@ pub fn run() {
         )
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
-        .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             Some(vec!["--minimized"]),
@@ -44,6 +44,8 @@ pub fn run() {
             commands::delete_connection,
             commands::save_settings,
             commands::set_theme,
+            commands::check_for_updates,
+            commands::install_latest_update,
             commands::test_rule,
             commands::save_rule,
             commands::delete_rule,
@@ -80,6 +82,41 @@ pub fn run() {
                             let _ = handle.emit("snapshot-updated", ());
                         }
                     }
+                }
+            });
+            let update_handle = app.handle().clone();
+            let update_state = update_handle.state::<state::AppState>().inner().clone();
+            tauri::async_runtime::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_secs(15)).await;
+                loop {
+                    if commands::automatic_update_is_due(&update_state) {
+                        let mode = update_state
+                            .config
+                            .lock()
+                            .map(|config| config.update_mode.clone())
+                            .unwrap_or_else(|_| "manual".to_owned());
+                        match commands::check_for_updates_inner(&update_state).await {
+                            Ok(release) if release.update_available && mode == "automatic" => {
+                                if let Err(error) = commands::install_latest_update_inner(
+                                    update_handle.clone(),
+                                    &update_state,
+                                )
+                                .await
+                                {
+                                    log::warn!("Automatic update was not installed: {error}");
+                                    let _ = update_handle.emit("update-error", error);
+                                }
+                            }
+                            Ok(release) if release.update_available => {
+                                let _ = update_handle.emit("update-available", release);
+                            }
+                            Ok(_) => {}
+                            Err(error) => {
+                                log::warn!("Background update check did not complete: {error}");
+                            }
+                        }
+                    }
+                    tokio::time::sleep(std::time::Duration::from_secs(60 * 60)).await;
                 }
             });
             if let Some(window) = app.get_webview_window("main") {
