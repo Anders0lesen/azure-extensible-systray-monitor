@@ -256,6 +256,7 @@ version = "0.8.0"
 dependencies = [
  "base64 0.23.1",
  "chrono",
+ "log",
  "oauth2",
  "rand 0.10.2",
  "reqwest 0.13.4",
@@ -273,7 +274,6 @@ dependencies = [
  "tauri-plugin-updater",
  "thiserror 2.0.20",
  "tokio",
- "tracing",
  "url",
  "uuid",
  "windows 0.62.2",
@@ -2202,9 +2202,9 @@ dependencies = [
 
 [[package]]
 name = "log"
-version = "0.4.34"
+version = "0.4.29"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f9f8bd3e56ce4dfc153cf470fffbfa98c7620958b312ca5c3a4b8d5181fd13c6"
+checksum = "5e5032e24019045c762d3c0f28f5b6b8bbf38563a65908389bf7978758920897"
 
 [[package]]
 name = "markup5ever"

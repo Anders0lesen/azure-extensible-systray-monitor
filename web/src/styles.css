@@ -97,6 +97,7 @@ button { cursor: pointer; }
 .field label { font-weight: 600; font-size: 13px; }
 .field small { color: var(--muted); }
 input, select, textarea { width: 100%; color: var(--text); background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 10px 11px; outline: none; }
+input[type="checkbox"], input[type="radio"] { width: auto; accent-color: var(--blue); }
 input:focus, select:focus, textarea:focus { border-color: var(--blue); box-shadow: 0 0 0 3px color-mix(in srgb, var(--blue) 18%, transparent); }
 textarea { resize: vertical; min-height: 175px; font-family: "Cascadia Code", Consolas, monospace; font-size: 13px; line-height: 1.5; }
 .form-grid { display: grid; gap: 14px; }
@@ -106,6 +107,7 @@ textarea { resize: vertical; min-height: 175px; font-family: "Cascadia Code", Co
 .callout.success { border-color: var(--green); }
 .toggle-row { display: flex; gap: 10px; align-items: flex-start; }
 .toggle-row input { width: auto; margin-top: 4px; }
+.form-grid > label:not(.toggle-row) { display: flex; gap: 9px; align-items: center; }
 .settings-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
 .settings-grid .panel { margin: 0; box-shadow: none; }
 .setup { max-width: 900px; margin: 20px auto; }

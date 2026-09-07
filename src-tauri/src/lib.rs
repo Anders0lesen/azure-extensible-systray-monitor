@@ -13,6 +13,12 @@ use tauri::{Emitter, Manager};
 pub fn run() {
     let state = state::AppState::load().expect("Azure Health Beacon state could not be loaded");
     tauri::Builder::default()
+        .plugin(
+            tauri_plugin_log::Builder::new()
+                .level(log::LevelFilter::Info)
+                .max_file_size(2_000_000)
+                .build(),
+        )
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
@@ -37,6 +43,7 @@ pub fn run() {
             commands::complete_setup,
             commands::delete_connection,
             commands::save_settings,
+            commands::set_theme,
             commands::test_rule,
             commands::save_rule,
             commands::delete_rule,
@@ -69,7 +76,7 @@ pub fn run() {
                         if let Err(error) =
                             commands::run_checks(handle.clone(), scheduled_state.clone()).await
                         {
-                            tracing::warn!("Scheduled check did not complete: {error}");
+                            log::warn!("Scheduled check did not complete: {error}");
                             let _ = handle.emit("snapshot-updated", ());
                         }
                     }

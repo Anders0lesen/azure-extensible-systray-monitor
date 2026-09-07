@@ -148,6 +148,22 @@ pub fn save_settings(
 }
 
 #[tauri::command]
+pub fn set_theme(theme_mode: String, state: State<'_, AppState>) -> Result<AppSnapshot, String> {
+    if !matches!(theme_mode.as_str(), "dark" | "light") {
+        return Err("Theme must be dark or light".into());
+    }
+    {
+        let mut config = state
+            .config
+            .lock()
+            .map_err(|_| "The settings lock is unavailable")?;
+        config.theme_mode = theme_mode;
+        save_config(&config)?;
+    }
+    snapshot_inner(&state)
+}
+
+#[tauri::command]
 pub async fn test_rule(
     rule: CheckDefinition,
     state: State<'_, AppState>,
@@ -213,7 +229,10 @@ pub fn save_rule(rule: CheckDefinition, state: State<'_, AppState>) -> Result<Ap
 
 fn rule_fingerprint(rule: &CheckDefinition) -> Result<String, String> {
     let serialized = serde_json::to_vec(rule).map_err(|_| "The rule could not be fingerprinted")?;
-    Ok(format!("{:x}", Sha256::digest(serialized)))
+    Ok(Sha256::digest(serialized)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect())
 }
 
 #[tauri::command]
@@ -338,7 +357,7 @@ pub fn show_main(app: AppHandle) -> Result<(), String> {
         .map_err(|_| "The main window could not be restored")?;
     window
         .set_focus()
-        .map_err(|_| "The main window could not be focused")
+        .map_err(|_| "The main window could not be focused".to_owned())
 }
 
 fn snapshot_inner(state: &State<'_, AppState>) -> Result<AppSnapshot, String> {

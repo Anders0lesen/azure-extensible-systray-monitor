@@ -49,7 +49,7 @@ function e(value: unknown): string {
 
 function newRule(kind: string): Rule {
   return {
-    id: crypto.randomUUID(), name: "", resource_id: "", portal_url: "", tenant_id: snapshot.config.azure_tenant_id,
+    id: crypto.randomUUID(), name: "", resource_id: "", portal_url: "", tenant_id: snapshot?.config.azure_tenant_id ?? "",
     expected_values: kind === "azure_vm_power_state" ? ["PowerState/running"] : ["azure_resource_graph", "azure_log_analytics", "azure_monitor_metric"].includes(kind) ? [] : ["Succeeded"], enabled: true,
     kind, query: "", scope: kind === "azure_resource_graph" ? "all_accessible" : kind === "azure_log_analytics" ? "workspace" : "resource",
     workspace_id: "", lookback_minutes: 5, metric_name: "", metric_namespace: "", metric_aggregation: "Average",
@@ -63,8 +63,26 @@ async function load(): Promise<void> {
     applyTheme();
     render();
   } catch (error) {
+    if (!("__TAURI_INTERNALS__" in window) && (import.meta.env.DEV || location.hostname === "127.0.0.1")) {
+      snapshot = mockSnapshot();
+      applyTheme();
+      render();
+      return;
+    }
     app.innerHTML = `<div class="page"><div class="panel"><h1>Azure Health Beacon could not start</h1><p>${e(error)}</p></div></div>`;
   }
+}
+
+function mockSnapshot(): Snapshot {
+  const setupPreview = new URLSearchParams(location.search).has("setup");
+  const demo = newRule("azure_resource_graph");
+  demo.name = "Expired Key Vault certificates";
+  demo.query = "Resources\n| where type =~ 'microsoft.keyvault/vaults'\n| where properties.expiryDate < now()";
+  return {
+    version: "0.8.0-preview", connected: !setupPreview, connectionExpiresUtc: setupPreview ? "" : new Date(Date.now() + 12 * 86400000).toISOString(), beaconState: setupPreview ? "unconnectable" : "healthy",
+    config: { onboarding_completed: !setupPreview, azure_subscription_id: setupPreview ? "" : "00000000-0000-0000-0000-000000000000", azure_subscription_name: setupPreview ? "" : "Preview subscription", azure_tenant_id: setupPreview ? "" : "11111111-1111-1111-1111-111111111111", interval_minutes: 5, timeout_seconds: 30, retry_count: 2, update_mode: "manual", start_with_windows: false, start_minimized: false, theme_mode: "dark", checks: setupPreview ? [] : [demo] },
+    results: setupPreview ? [] : [{ check_id: demo.id, name: demo.name, state: "healthy", summary: "Resource Graph returned no findings.", observed_value: "0", checked_at: new Date().toISOString(), portal_url: "" }],
+  };
 }
 
 function applyTheme(): void { document.documentElement.dataset.theme = snapshot?.config.theme_mode ?? "dark"; }
@@ -221,7 +239,7 @@ async function saveSettings(): Promise<void> { try { const selected = document.q
 
 function bindCommon(): void {
   document.querySelectorAll<HTMLElement>("[data-page]").forEach(item => item.addEventListener("click", () => { page = item.dataset.page as Page; editing = null; choosingSource = false; render(); }));
-  document.querySelector("#theme-toggle")?.addEventListener("click", async () => { snapshot.config.theme_mode = snapshot.config.theme_mode === "dark" ? "light" : "dark"; applyTheme(); render(); });
+  document.querySelector("#theme-toggle")?.addEventListener("click", async () => { const themeMode = snapshot.config.theme_mode === "dark" ? "light" : "dark"; snapshot.config.theme_mode = themeMode; applyTheme(); render(); try { snapshot = await invoke<Snapshot>("set_theme", { themeMode }); } catch (error) { toast(String(error), true); } });
 }
 function bindPortalLinks(): void { document.querySelectorAll<HTMLElement>(".portal-link").forEach(item => item.addEventListener("click", () => openUrl(item.dataset.url!))); }
 function sourceName(kind: string): string { return sources.find(source => source[0] === kind)?.[1] ?? kind; }
@@ -229,5 +247,7 @@ function stateLabel(state: string): string { return state === "failed" ? "Azure 
 function toast(message: string, error = false): void { document.querySelector(".toast")?.remove(); const node = document.createElement("div"); node.className = `toast${error ? " error" : ""}`; node.textContent = message; document.body.append(node); setTimeout(() => node.remove(), 5500); }
 
 void load();
-void listen("tray-check-now", () => void checkNow());
-void listen("snapshot-updated", () => void load());
+if ("__TAURI_INTERNALS__" in window) {
+  void listen("tray-check-now", () => void checkNow());
+  void listen("snapshot-updated", () => void load());
+}
