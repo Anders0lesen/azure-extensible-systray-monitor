@@ -1,0 +1,47 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Azure Health Beacon",
+  "version": "0.8.0",
+  "identifier": "com.andersolesen.azure-health-beacon",
+  "build": {
+    "beforeDevCommand": "pnpm build:web --watch",
+    "devUrl": "http://localhost:5173",
+    "beforeBuildCommand": "pnpm build:web",
+    "frontendDist": "../dist-web"
+  },
+  "app": {
+    "security": {
+      "csp": "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src ipc: http://ipc.localhost"
+    },
+    "windows": [
+      {
+        "label": "main",
+        "title": "Azure Health Beacon",
+        "width": 1240,
+        "height": 800,
+        "minWidth": 980,
+        "minHeight": 640,
+        "center": true,
+        "resizable": true,
+        "visible": false
+      }
+    ]
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis"],
+    "createUpdaterArtifacts": false,
+    "category": "Utility",
+    "shortDescription": "Extensible Azure signal monitor",
+    "longDescription": "A local-first Windows 11 tray monitor for Azure resources, Resource Graph, logs, Application Insights, and metrics.",
+    "copyright": "Unlicense",
+    "icon": ["../assets/AzureHealthBeacon.ico"],
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser",
+        "installerIcon": "../assets/AzureHealthBeacon.ico",
+        "displayLanguageSelector": false
+      }
+    }
+  }
+}
