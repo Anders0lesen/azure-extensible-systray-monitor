@@ -1,0 +1,24 @@
+{
+  "name": "azure-health-beacon",
+  "private": true,
+  "version": "0.8.0",
+  "type": "module",
+  "scripts": {
+    "dev": "tauri dev",
+    "build:web": "vite build",
+    "build": "tauri build",
+    "check:web": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "2.11.0",
+    "@tauri-apps/plugin-dialog": "2.7.3",
+    "@tauri-apps/plugin-opener": "2.5.5",
+    "@tauri-apps/plugin-updater": "2.11.0"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "2.11.4",
+    "typescript": "7.0.2",
+    "vite": "8.2.2"
+  },
+  "packageManager": "pnpm@11.19.0"
+}
