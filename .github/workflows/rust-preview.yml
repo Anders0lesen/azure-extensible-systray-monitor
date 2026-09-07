@@ -60,7 +60,10 @@ jobs:
           cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings 2>&1 |
             Tee-Object -FilePath clippy-output.txt
           if ($LASTEXITCODE -ne 0) {
-            $details = (Get-Content clippy-output.txt -Tail 160) -join "`n"
+            $lines = Get-Content clippy-output.txt
+            $firstError = 0..($lines.Count - 1) | Where-Object { $lines[$_] -match '^error(?:\[|:)' } | Select-Object -First 1
+            $details = if ($null -ne $firstError) { ($lines[$firstError..($lines.Count - 1)] -join "`n") } else { ($lines[-80..-1] -join "`n") }
+            if ($details.Length -gt 3900) { $details = $details.Substring(0, 3900) }
             $details = $details.Replace("%", "%25").Replace("`r", "%0D").Replace("`n", "%0A")
             Write-Output "::error title=Rust compiler output::$details"
             exit 1

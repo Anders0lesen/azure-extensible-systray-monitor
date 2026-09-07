@@ -44,7 +44,7 @@ impl DpapiStore {
         fs::create_dir_all(parent)
             .map_err(|_| "Encrypted identity directory could not be created")?;
         let temporary = parent.join(format!("identity-{}.tmp", uuid::Uuid::new_v4()));
-        let result = (|| {
+        let result = (|| -> Result<(), String> {
             let mut file = fs::File::create(&temporary)
                 .map_err(|_| "Encrypted identity file could not be created")?;
             file.write_all(&encrypted)
@@ -52,7 +52,6 @@ impl DpapiStore {
             file.sync_all()
                 .map_err(|_| "Encrypted identity file could not be flushed")?;
             atomic_replace(&temporary, &self.path)
-                .map_err(|_| "Encrypted identity file could not be replaced atomically")
         })();
         let _ = fs::remove_file(&temporary);
         result

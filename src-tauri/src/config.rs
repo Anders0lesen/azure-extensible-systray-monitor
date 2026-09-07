@@ -158,7 +158,7 @@ pub fn save_config_to(path: &Path, config: &AppConfig) -> Result<(), String> {
         .ok_or("Configuration path has no parent directory")?;
     fs::create_dir_all(parent).map_err(|_| "Configuration directory could not be created")?;
     let temporary = parent.join(format!("checks-{}.tmp", Uuid::new_v4()));
-    let result: Result<(), String> = (|| {
+    let result = (|| -> Result<(), String> {
         let mut file = fs::File::create(&temporary)
             .map_err(|_| "Temporary configuration could not be created")?;
         file.write_all(&bytes)
@@ -172,7 +172,6 @@ pub fn save_config_to(path: &Path, config: &AppConfig) -> Result<(), String> {
                 .map_err(|_| "Configuration backup could not be created")?;
         }
         atomic_replace(&temporary, path)
-            .map_err(|_| "Configuration could not be replaced atomically")
     })();
     let _ = fs::remove_file(&temporary);
     result
@@ -221,14 +220,14 @@ pub fn export_rule_pack(path: &Path, checks: &[CheckDefinition]) -> Result<(), S
         .ok_or("Rule pack path has no parent directory")?;
     fs::create_dir_all(parent).map_err(|_| "Rule pack directory could not be created")?;
     let temporary = parent.join(format!("rules-{}.tmp", Uuid::new_v4()));
-    let result: Result<(), String> = (|| {
+    let result = (|| -> Result<(), String> {
         let mut file =
             fs::File::create(&temporary).map_err(|_| "Temporary rule pack could not be created")?;
         file.write_all(&bytes)
             .map_err(|_| "Temporary rule pack could not be written")?;
         file.sync_all()
             .map_err(|_| "Temporary rule pack could not be flushed")?;
-        atomic_replace(&temporary, path).map_err(|_| "Rule pack could not be replaced atomically")
+        atomic_replace(&temporary, path)
     })();
     let _ = fs::remove_file(temporary);
     result
