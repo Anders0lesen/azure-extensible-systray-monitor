@@ -24,10 +24,10 @@ jobs:
     timeout-minutes: 30
     steps:
       - name: Check out the exact source
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Use Node.js 24
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        uses: actions/setup-node@6044e13b5dc448c55e2357c09f80417699197238 # v6.2.0
         with:
           node-version: "24.8.0"
 
@@ -55,7 +55,16 @@ jobs:
         run: cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
 
       - name: Compile and lint Rust
-        run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+        shell: pwsh
+        run: |
+          cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings 2>&1 |
+            Tee-Object -FilePath clippy-output.txt
+          if ($LASTEXITCODE -ne 0) {
+            $details = (Get-Content clippy-output.txt -Tail 160) -join "`n"
+            $details = $details.Replace("%", "%25").Replace("`r", "%0D").Replace("`n", "%0A")
+            Write-Output "::error title=Rust compiler output::$details"
+            exit 1
+          }
 
       - name: Run Rust tests
         run: cargo test --manifest-path src-tauri/Cargo.toml
