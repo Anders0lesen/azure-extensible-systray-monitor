@@ -314,7 +314,7 @@ fn download_limited(url: Url, timeout: u64, limit: u64) -> Result<Vec<u8>, Strin
     limited_bytes(response, limit as usize)
 }
 
-fn limited_bytes(mut response: Response, limit: usize) -> Result<Vec<u8>, String> {
+fn limited_bytes(response: Response, limit: usize) -> Result<Vec<u8>, String> {
     if response
         .content_length()
         .is_some_and(|value| value > limit as u64)

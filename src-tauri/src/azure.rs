@@ -124,8 +124,7 @@ impl AzureClient {
             }
         }
         let mut subscriptions = found.into_values().collect::<Vec<_>>();
-        subscriptions
-            .sort_by(|left, right| left.name.to_lowercase().cmp(&right.name.to_lowercase()));
+        subscriptions.sort_by_key(|item| item.name.to_lowercase());
         if subscriptions.is_empty() {
             Err(first_error.unwrap_or_else(|| {
                 "The Microsoft account has no accessible enabled Azure subscriptions".to_owned()
@@ -736,8 +735,10 @@ mod tests {
 
     #[test]
     fn any_query_row_is_a_confirmed_failure() {
-        let mut check = CheckDefinition::default();
-        check.name = "errors".into();
+        let check = CheckDefinition {
+            name: "errors".into(),
+            ..Default::default()
+        };
         assert_eq!(
             rows_result(&check, vec![json!({"error": "one"})], "Logs").state,
             CheckState::Failed

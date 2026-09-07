@@ -107,6 +107,12 @@ impl AppConfig {
         self.azure_subscription_name.clear();
         self.azure_tenant_id.clear();
         self.connection_established_utc.clear();
+        self.connection_purge_pending = false;
+    }
+
+    pub fn begin_connection_purge(&mut self) {
+        self.onboarding_completed = false;
+        self.connection_purge_pending = true;
     }
 }
 
@@ -444,20 +450,39 @@ mod tests {
 
     #[test]
     fn secret_like_rule_is_rejected() {
-        let mut rule = CheckDefinition::default();
-        rule.name = "unsafe".into();
-        rule.resource_id = "/subscriptions/1/resourceGroups/a/providers/X/y/z".into();
-        rule.portal_url = "https://portal.azure.com/#view/test?sig=abc".into();
+        let rule = CheckDefinition {
+            name: "unsafe".into(),
+            resource_id: "/subscriptions/1/resourceGroups/a/providers/X/y/z".into(),
+            portal_url: "https://portal.azure.com/#view/test?sig=abc".into(),
+            ..Default::default()
+        };
         assert!(validate_rule(&rule).is_err());
     }
 
     #[test]
     fn expiry_is_exactly_fourteen_days() {
         let now = Utc::now();
-        let mut config = AppConfig::default();
-        config.onboarding_completed = true;
-        config.connection_established_utc = (now - Duration::days(14)).to_rfc3339();
+        let config = AppConfig {
+            onboarding_completed: true,
+            connection_established_utc: (now - Duration::days(14)).to_rfc3339(),
+            ..Default::default()
+        };
         assert!(config.connection_expired(now));
+    }
+
+    #[test]
+    fn credential_purge_marker_blocks_monitoring_until_delete_finishes() {
+        let mut config = AppConfig {
+            onboarding_completed: true,
+            connection_established_utc: Utc::now().to_rfc3339(),
+            ..Default::default()
+        };
+        config.begin_connection_purge();
+        assert!(!config.onboarding_completed);
+        assert!(config.connection_purge_pending);
+        config.clear_connection();
+        assert!(!config.connection_purge_pending);
+        assert!(config.connection_established_utc.is_empty());
     }
 
     #[test]
@@ -465,9 +490,11 @@ mod tests {
         let directory = std::env::temp_dir().join(format!("beacon-pack-{}", Uuid::new_v4()));
         fs::create_dir_all(&directory).unwrap();
         let path = directory.join("rules.json");
-        let mut rule = CheckDefinition::default();
-        rule.name = "resource".into();
-        rule.resource_id = "/subscriptions/1/resourceGroups/a/providers/X/y/z".into();
+        let rule = CheckDefinition {
+            name: "resource".into(),
+            resource_id: "/subscriptions/1/resourceGroups/a/providers/X/y/z".into(),
+            ..Default::default()
+        };
         export_rule_pack(&path, &[rule]).unwrap();
         let imported = import_rule_pack(&path).unwrap();
         assert!(!imported[0].enabled);

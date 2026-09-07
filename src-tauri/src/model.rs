@@ -76,20 +76,6 @@ impl Default for CheckDefinition {
     }
 }
 
-impl CheckDefinition {
-    pub fn subscription_id(&self) -> Option<&str> {
-        let parts = self
-            .resource_id
-            .split('/')
-            .filter(|part| !part.is_empty())
-            .collect::<Vec<_>>();
-        parts
-            .windows(2)
-            .find(|pair| pair[0].eq_ignore_ascii_case("subscriptions"))
-            .map(|pair| pair[1])
-    }
-}
-
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct CheckFinding {
     pub title: String,

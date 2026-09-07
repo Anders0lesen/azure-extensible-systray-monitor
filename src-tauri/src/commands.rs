@@ -98,6 +98,14 @@ pub async fn complete_setup(
 
 #[tauri::command]
 pub fn delete_connection(state: State<'_, AppState>) -> Result<AppSnapshot, String> {
+    {
+        let mut config = state
+            .config
+            .lock()
+            .map_err(|_| "The settings lock is unavailable")?;
+        config.begin_connection_purge();
+        save_config(&config)?;
+    }
     state.identity.delete()?;
     {
         let mut config = state

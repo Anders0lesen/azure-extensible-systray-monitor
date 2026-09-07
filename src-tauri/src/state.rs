@@ -23,7 +23,9 @@ impl AppState {
     pub fn load() -> Result<Self, String> {
         let mut config = load_config()?;
         let identity = Arc::new(IdentityManager::default());
-        if config.connection_expired(Utc::now()) {
+        if config.connection_purge_pending || config.connection_expired(Utc::now()) {
+            config.begin_connection_purge();
+            save_config(&config)?;
             identity.delete()?;
             config.clear_connection();
             save_config(&config)?;
