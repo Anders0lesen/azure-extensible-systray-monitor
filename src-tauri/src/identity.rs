@@ -6,7 +6,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use chrono::Utc;
+use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use oauth2::{
     AuthType, AuthUrl, AuthorizationCode, ClientId, CsrfToken, PkceCodeChallenge, RedirectUrl,
     RefreshToken, Scope, TokenResponse, TokenUrl, basic::BasicClient, reqwest,
@@ -138,6 +138,13 @@ impl IdentityManager {
         plaintext.zeroize();
         if record.version != IDENTITY_VERSION {
             return Err("The encrypted Azure connection requires a fresh sign-in".into());
+        }
+        let established = DateTime::parse_from_rfc3339(&record.established_utc)
+            .map(|value| value.with_timezone(&Utc))
+            .map_err(|_| "The encrypted Azure connection has no valid creation time")?;
+        if Utc::now() >= established + ChronoDuration::days(14) {
+            self.store.delete_parent()?;
+            return Err("The Azure authorization reached its 14-day limit and was deleted".into());
         }
         let client = oauth_client(tenant, None)?;
         let http = token_client()?;

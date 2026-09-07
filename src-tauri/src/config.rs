@@ -182,6 +182,88 @@ pub fn save_config(config: &AppConfig) -> Result<(), String> {
     save_config_to(&config_path(), config)
 }
 
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct RulePack {
+    format: String,
+    schema_version: u32,
+    created_utc: String,
+    checks: Vec<CheckDefinition>,
+}
+
+pub fn export_rule_pack(path: &Path, checks: &[CheckDefinition]) -> Result<(), String> {
+    if checks.is_empty() {
+        return Err("There are no rules to export".into());
+    }
+    if checks.len() > MAX_RULES_PER_PACK {
+        return Err("Too many rules to export in one pack".into());
+    }
+    for check in checks {
+        validate_rule(check)?;
+    }
+    let pack = RulePack {
+        format: RULE_PACK_FORMAT.to_owned(),
+        schema_version: RULE_PACK_SCHEMA_VERSION,
+        created_utc: Utc::now().to_rfc3339(),
+        checks: checks.to_vec(),
+    };
+    let value = serde_json::to_value(&pack).map_err(|_| "Rule pack could not be prepared")?;
+    reject_sensitive_keys(&value, "rule_pack")?;
+    reject_secret_like_json(&value)?;
+    let mut bytes =
+        serde_json::to_vec_pretty(&pack).map_err(|_| "Rule pack could not be serialized")?;
+    bytes.push(b'\n');
+    if bytes.len() as u64 > MAX_RULE_PACK_BYTES {
+        return Err("Rule pack exceeds the 1 MB safety limit".into());
+    }
+    let parent = path
+        .parent()
+        .ok_or("Rule pack path has no parent directory")?;
+    fs::create_dir_all(parent).map_err(|_| "Rule pack directory could not be created")?;
+    let temporary = parent.join(format!("rules-{}.tmp", Uuid::new_v4()));
+    let result = (|| {
+        let mut file =
+            fs::File::create(&temporary).map_err(|_| "Temporary rule pack could not be created")?;
+        file.write_all(&bytes)
+            .map_err(|_| "Temporary rule pack could not be written")?;
+        file.sync_all()
+            .map_err(|_| "Temporary rule pack could not be flushed")?;
+        atomic_replace(&temporary, path).map_err(|_| "Rule pack could not be replaced atomically")
+    })();
+    let _ = fs::remove_file(temporary);
+    result
+}
+
+pub fn import_rule_pack(path: &Path) -> Result<Vec<CheckDefinition>, String> {
+    let metadata = fs::metadata(path).map_err(|_| "Rule pack could not be opened")?;
+    if metadata.len() > MAX_RULE_PACK_BYTES {
+        return Err("Rule pack exceeds the 1 MB safety limit".into());
+    }
+    let bytes = fs::read(path).map_err(|_| "Rule pack could not be read")?;
+    let raw: Value = serde_json::from_slice(&bytes).map_err(|_| "Rule pack is not valid JSON")?;
+    reject_sensitive_keys(&raw, "rule_pack")?;
+    reject_secret_like_json(&raw)?;
+    let mut pack: RulePack = serde_json::from_value(raw)
+        .map_err(|error| format!("Rule pack is incompatible: {error}"))?;
+    if pack.format != RULE_PACK_FORMAT
+        || !(1..=RULE_PACK_SCHEMA_VERSION).contains(&pack.schema_version)
+    {
+        return Err("This is not a supported Azure Health Beacon rule pack".into());
+    }
+    if pack.checks.is_empty() || pack.checks.len() > MAX_RULES_PER_PACK {
+        return Err("Rule pack contains no rules or exceeds the 500-rule limit".into());
+    }
+    let mut ids = HashSet::new();
+    for check in &mut pack.checks {
+        validate_rule(check)?;
+        if !ids.insert(check.id.to_ascii_lowercase()) {
+            return Err("Rule pack contains duplicate rule IDs".into());
+        }
+        check.enabled = false;
+    }
+    Ok(pack.checks)
+}
+
 pub fn validate_rule(rule: &CheckDefinition) -> Result<(), String> {
     const KINDS: &[&str] = &[
         "azure_resource_provisioning",
@@ -377,5 +459,19 @@ mod tests {
         config.onboarding_completed = true;
         config.connection_established_utc = (now - Duration::days(14)).to_rfc3339();
         assert!(config.connection_expired(now));
+    }
+
+    #[test]
+    fn imported_rules_are_always_inert() {
+        let directory = std::env::temp_dir().join(format!("beacon-pack-{}", Uuid::new_v4()));
+        fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("rules.json");
+        let mut rule = CheckDefinition::default();
+        rule.name = "resource".into();
+        rule.resource_id = "/subscriptions/1/resourceGroups/a/providers/X/y/z".into();
+        export_rule_pack(&path, &[rule]).unwrap();
+        let imported = import_rule_pack(&path).unwrap();
+        assert!(!imported[0].enabled);
+        let _ = fs::remove_dir_all(directory);
     }
 }

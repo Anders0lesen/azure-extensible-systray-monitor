@@ -1,12 +1,12 @@
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_autostart::ManagerExt;
 
 use crate::{
     azure::{AzureClient, Subscription},
-    config::{AppConfig, save_config, validate_rule},
+    config::{AppConfig, export_rule_pack, import_rule_pack, save_config, validate_rule},
     model::{BeaconState, CheckDefinition, CheckResult, aggregate_state},
     state::AppState,
 };
@@ -235,7 +235,51 @@ pub fn delete_rule(rule_id: String, state: State<'_, AppState>) -> Result<AppSna
 }
 
 #[tauri::command]
-pub async fn check_now(state: State<'_, AppState>) -> Result<AppSnapshot, String> {
+pub fn export_rules(path: String, state: State<'_, AppState>) -> Result<(), String> {
+    let config = state
+        .config
+        .lock()
+        .map_err(|_| "The settings lock is unavailable")?;
+    export_rule_pack(std::path::Path::new(&path), &config.checks)
+}
+
+#[tauri::command]
+pub fn import_rules(path: String, state: State<'_, AppState>) -> Result<AppSnapshot, String> {
+    let mut incoming = import_rule_pack(std::path::Path::new(&path))?;
+    {
+        let mut config = state
+            .config
+            .lock()
+            .map_err(|_| "The settings lock is unavailable")?;
+        let existing = config
+            .checks
+            .iter()
+            .map(|rule| rule.id.to_ascii_lowercase())
+            .collect::<std::collections::HashSet<_>>();
+        for rule in &mut incoming {
+            if existing.contains(&rule.id.to_ascii_lowercase()) {
+                rule.id = uuid::Uuid::new_v4().to_string();
+            }
+        }
+        config.checks.extend(incoming);
+        save_config(&config)?;
+    }
+    snapshot_inner(&state)
+}
+
+#[tauri::command]
+pub async fn check_now(app: AppHandle, state: State<'_, AppState>) -> Result<AppSnapshot, String> {
+    run_checks(app, state.inner().clone()).await
+}
+
+pub async fn run_checks(app: AppHandle, state: AppState) -> Result<AppSnapshot, String> {
+    let previous = state
+        .results
+        .lock()
+        .map_err(|_| "The result lock is unavailable")?
+        .clone();
+    let interim = aggregate_state(&previous, true, false);
+    crate::tray::update(&app, interim);
     let config = state
         .config
         .lock()
@@ -245,7 +289,7 @@ pub async fn check_now(state: State<'_, AppState>) -> Result<AppSnapshot, String
         return Err("Connect Azure before running checks".into());
     }
     let identity = state.identity.clone();
-    let results = tauri::async_runtime::spawn_blocking(move || {
+    let operation = tauri::async_runtime::spawn_blocking(move || {
         let client = AzureClient::new(identity, config.timeout_seconds);
         let graph_needed = config
             .checks
@@ -263,13 +307,22 @@ pub async fn check_now(state: State<'_, AppState>) -> Result<AppSnapshot, String
             .map(|rule| client.evaluate(rule, &config.azure_tenant_id, &subscriptions))
             .collect::<Vec<_>>()
     })
-    .await
-    .map_err(|_| "The Azure check task stopped unexpectedly")?;
+    .await;
+    let results = match operation {
+        Ok(results) => results,
+        Err(_) => {
+            crate::tray::update(&app, BeaconState::Unconnectable);
+            return Err("The Azure check task stopped unexpectedly".into());
+        }
+    };
     *state
         .results
         .lock()
         .map_err(|_| "The result lock is unavailable")? = results;
-    snapshot_inner(&state)
+    let snapshot = snapshot_from(&state)?;
+    crate::tray::update(&app, snapshot.beacon_state);
+    let _ = app.emit("snapshot-updated", ());
+    Ok(snapshot)
 }
 
 #[tauri::command]
@@ -289,6 +342,10 @@ pub fn show_main(app: AppHandle) -> Result<(), String> {
 }
 
 fn snapshot_inner(state: &State<'_, AppState>) -> Result<AppSnapshot, String> {
+    snapshot_from(state.inner())
+}
+
+fn snapshot_from(state: &AppState) -> Result<AppSnapshot, String> {
     let config = state
         .config
         .lock()

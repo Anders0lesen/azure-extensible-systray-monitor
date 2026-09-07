@@ -5,8 +5,9 @@ mod identity;
 mod model;
 mod security;
 mod state;
+mod tray;
 
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -39,10 +40,41 @@ pub fn run() {
             commands::test_rule,
             commands::save_rule,
             commands::delete_rule,
+            commands::export_rules,
+            commands::import_rules,
             commands::check_now,
             commands::show_main,
         ])
         .setup(|app| {
+            tray::install(app)?;
+            let handle = app.handle().clone();
+            let scheduled_state = handle.state::<state::AppState>().inner().clone();
+            tauri::async_runtime::spawn(async move {
+                loop {
+                    let minutes = scheduled_state
+                        .config
+                        .lock()
+                        .map(|config| config.interval_minutes)
+                        .unwrap_or(5);
+                    tokio::time::sleep(std::time::Duration::from_secs(
+                        u64::from(minutes).saturating_mul(60),
+                    ))
+                    .await;
+                    let connected = scheduled_state
+                        .config
+                        .lock()
+                        .map(|config| config.onboarding_completed)
+                        .unwrap_or(false);
+                    if connected {
+                        if let Err(error) =
+                            commands::run_checks(handle.clone(), scheduled_state.clone()).await
+                        {
+                            tracing::warn!("Scheduled check did not complete: {error}");
+                            let _ = handle.emit("snapshot-updated", ());
+                        }
+                    }
+                }
+            });
             if let Some(window) = app.get_webview_window("main") {
                 let minimized = std::env::args().any(|argument| argument == "--minimized");
                 if !minimized {

@@ -1,4 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
+import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import "./styles.css";
 
@@ -48,7 +50,7 @@ function e(value: unknown): string {
 function newRule(kind: string): Rule {
   return {
     id: crypto.randomUUID(), name: "", resource_id: "", portal_url: "", tenant_id: snapshot.config.azure_tenant_id,
-    expected_values: kind === "azure_vm_power_state" ? ["PowerState/running"] : ["Succeeded"], enabled: true,
+    expected_values: kind === "azure_vm_power_state" ? ["PowerState/running"] : ["azure_resource_graph", "azure_log_analytics", "azure_monitor_metric"].includes(kind) ? [] : ["Succeeded"], enabled: true,
     kind, query: "", scope: kind === "azure_resource_graph" ? "all_accessible" : kind === "azure_log_analytics" ? "workspace" : "resource",
     workspace_id: "", lookback_minutes: 5, metric_name: "", metric_namespace: "", metric_aggregation: "Average",
     metric_reducer: "latest", metric_operator: "gt", metric_threshold: 0, metric_filter: "", property_path: "properties.provisioningState", property_operator: "equals_any",
@@ -122,8 +124,10 @@ function renderChecks(): void {
   }
   if (editing) { renderEditor(); return; }
   const rows = snapshot.config.checks.map(rule => `<button class="rule-row" data-rule="${e(rule.id)}"><strong>${e(rule.name)}</strong><span>${e(sourceName(rule.kind))} · ${rule.enabled ? "Enabled" : "Disabled"}</span></button>`).join("");
-  app.innerHTML = layout("Checks", "Create, edit, test and share Azure signals", `<div class="toolbar"><p class="muted">${snapshot.config.checks.length} configured rule(s)</p><button class="button primary" id="new-rule">＋ New check</button></div><div class="panel">${rows || `<div class="empty">No rules yet. Start by choosing a signal source.</div>`}</div>`);
+  app.innerHTML = layout("Checks", "Create, edit, test and share Azure signals", `<div class="toolbar"><p class="muted">${snapshot.config.checks.length} configured rule(s)</p><div class="actions"><button class="button" id="import-rules">Import rule pack</button><button class="button" id="export-rules" ${snapshot.config.checks.length ? "" : "disabled"}>Export all rules</button><button class="button primary" id="new-rule">＋ New check</button></div></div><div class="panel">${rows || `<div class="empty">No rules yet. Start by choosing a signal source.</div>`}</div>`);
   document.querySelector("#new-rule")?.addEventListener("click", () => { choosingSource = true; render(); });
+  document.querySelector("#import-rules")?.addEventListener("click", importRules);
+  document.querySelector("#export-rules")?.addEventListener("click", exportRules);
   document.querySelectorAll<HTMLElement>("[data-rule]").forEach(row => row.addEventListener("click", () => { editing = structuredClone(snapshot.config.checks.find(rule => rule.id === row.dataset.rule)!); render(); }));
 }
 
@@ -145,7 +149,7 @@ function ruleFields(rule: Rule): string {
   if (rule.kind === "azure_vm_power_state") specific += field("expected_values", "Healthy VM power states", "Example: PowerState/running");
   if (rule.kind === "azure_resource_property") specific += field("property_path", "Property path", "Example: properties.provisioningState") + selectField("property_operator", "Comparison", [["equals_any", "Equals any healthy value"], ["not_equals_any", "Does not equal any"], ["contains", "Contains"], ["not_contains", "Does not contain"], ["greater_than", "Greater than"], ["less_than", "Less than"], ["exists", "Exists"], ["missing", "Missing"]]) + field("expected_values", "Comparison values", "Comma-separated");
   if (rule.kind === "azure_resource_graph") specific += textareaField("query", "Resource Graph KQL", "Any returned row is a confirmed finding. Zero rows means healthy.");
-  if (rule.kind === "azure_log_analytics") specific += `<div class="form-grid compact">${field("workspace_id", "Workspace customer ID", "GUID")}${field("tenant_id", "Tenant ID", "Tenant containing the workspace")}${numberField("lookback_minutes", "Lookback in minutes")}</div>` + textareaField("query", "Azure Monitor KQL", "Any returned row is a confirmed finding. Zero rows means healthy.");
+  if (rule.kind === "azure_log_analytics") specific += `<div class="form-grid compact">${field("workspace_id", "Workspace customer ID", "GUID")}${numberField("lookback_minutes", "Lookback in minutes")}</div>` + textareaField("query", "Azure Monitor KQL", "Any returned row is a confirmed finding. Zero rows means healthy.");
   if (rule.kind === "azure_monitor_metric") specific += `<div class="form-grid compact">${field("metric_name", "Metric name", "Azure metric")}${field("metric_namespace", "Metric namespace", "Optional")}${selectField("metric_aggregation", "Aggregation", [["Average", "Average"], ["Count", "Count"], ["Maximum", "Maximum"], ["Minimum", "Minimum"], ["Total", "Total"]])}${selectField("metric_reducer", "Reduce samples", [["latest", "Latest"], ["maximum", "Maximum"], ["minimum", "Minimum"], ["average", "Average"], ["total", "Total"]])}${selectField("metric_operator", "Alert when", [["gt", "> Greater than"], ["gte", "≥ At least"], ["lt", "< Less than"], ["lte", "≤ At most"], ["eq", "= Equal"], ["ne", "≠ Not equal"]])}${numberField("metric_threshold", "Threshold")}${numberField("lookback_minutes", "Lookback in minutes")}${field("metric_filter", "Dimension filter", "Optional Azure Monitor filter")}</div>`;
   return `<div class="form-grid compact">${field("name", "Rule name", "Editable friendly name")}${field("tenant_id", "Tenant ID", "Optional safety binding")}${field("portal_url", "Azure Portal URL", "Optional direct link")}</div><div class="toggle-row"><input id="f-enabled" data-field="enabled" type="checkbox"><label for="f-enabled"><strong>Enabled</strong><br><small class="muted">Included in scheduled checks after it has been tested and applied.</small></label></div>${specific}`;
 }
@@ -209,6 +213,8 @@ async function finishSetup(): Promise<void> { const id = (document.querySelector
 async function checkNow(): Promise<void> { busy = true; render(); try { snapshot = await invoke<Snapshot>("check_now"); } catch (error) { toast(String(error), true); } finally { busy = false; render(); } }
 async function testRule(): Promise<void> { const rule = readEditor(); busy = true; try { const result = await invoke<Result>("test_rule", { rule }); const output = document.querySelector("#test-output")!; output.innerHTML = `<div class="callout ${result.state === "unconnectable" ? "error" : "success"}"><strong>${e(result.state.toUpperCase())}</strong><br>${e(result.summary)}</div>`; (document.querySelector("#save-rule") as HTMLButtonElement).disabled = result.state === "unconnectable"; } catch (error) { document.querySelector("#test-output")!.innerHTML = `<div class="callout error">${e(error)}</div>`; } finally { busy = false; } }
 async function saveRule(): Promise<void> { try { snapshot = await invoke<Snapshot>("save_rule", { rule: readEditor() }); editing = null; toast("Tested rule applied."); render(); } catch (error) { toast(String(error), true); } }
+async function importRules(): Promise<void> { try { const selected = await openDialog({ multiple: false, filters: [{ name: "Azure Health Beacon rule pack", extensions: ["json"] }] }); if (!selected) return; snapshot = await invoke<Snapshot>("import_rules", { path: selected }); toast("Rules imported disabled. Review and test each before enabling."); render(); } catch (error) { toast(String(error), true); } }
+async function exportRules(): Promise<void> { try { const selected = await saveDialog({ defaultPath: "azure-health-beacon-rules.json", filters: [{ name: "Azure Health Beacon rule pack", extensions: ["json"] }] }); if (!selected) return; await invoke("export_rules", { path: selected }); toast("Credential-free rule pack exported."); } catch (error) { toast(String(error), true); } }
 async function deleteRule(): Promise<void> { if (!editing || !confirm(`Delete ${editing.name}?`)) return; try { snapshot = await invoke<Snapshot>("delete_rule", { ruleId: editing.id }); editing = null; toast("Rule deleted."); render(); } catch (error) { toast(String(error), true); } }
 async function deleteConnection(): Promise<void> { if (!confirm("Delete the complete encrypted Azure connection? Rules will be retained.")) return; try { snapshot = await invoke<Snapshot>("delete_connection"); page = "overview"; toast("Azure connection deleted."); render(); } catch (error) { toast(String(error), true); } }
 async function saveSettings(): Promise<void> { try { const selected = document.querySelector<HTMLInputElement>('input[name="updates"]:checked')!; snapshot = await invoke<Snapshot>("save_settings", { patch: { intervalMinutes: Number((document.querySelector("#interval") as HTMLInputElement).value), timeoutSeconds: Number((document.querySelector("#timeout") as HTMLInputElement).value), retryCount: Number((document.querySelector("#retry") as HTMLInputElement).value), updateMode: selected.value, startWithWindows: (document.querySelector("#start-windows") as HTMLInputElement).checked, startMinimized: (document.querySelector("#start-minimized") as HTMLInputElement).checked, themeMode: snapshot.config.theme_mode } }); toast("Settings saved."); render(); } catch (error) { toast(String(error), true); } }
@@ -223,3 +229,5 @@ function stateLabel(state: string): string { return state === "failed" ? "Azure 
 function toast(message: string, error = false): void { document.querySelector(".toast")?.remove(); const node = document.createElement("div"); node.className = `toast${error ? " error" : ""}`; node.textContent = message; document.body.append(node); setTimeout(() => node.remove(), 5500); }
 
 void load();
+void listen("tray-check-now", () => void checkNow());
+void listen("snapshot-updated", () => void load());

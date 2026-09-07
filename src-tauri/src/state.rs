@@ -11,6 +11,7 @@ use crate::{
     model::CheckResult,
 };
 
+#[derive(Clone)]
 pub struct AppState {
     pub config: Arc<Mutex<AppConfig>>,
     pub identity: Arc<IdentityManager>,
